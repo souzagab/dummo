@@ -18,14 +18,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Geometry checks (validity + collisions for every preset)
-        run: npm run check -- --fast
+      - name: Geometry checks (validity + collisions for every preset, two resolutions)
+        run: npm run check -- --fast && npm run check
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

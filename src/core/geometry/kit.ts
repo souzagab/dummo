@@ -105,7 +105,9 @@ export function hingeEnd(d: Dims, length: number): Manifold {
     [H.spoolR, c + g], [H.spoolR, zhi + 0.01], [0, zhi + 0.01],
   ]);
   body = body.add(spool);
-  const hr = H.coreR, cs = 0.5 * d.s;
+  // countersink: 0.45 (not 0.5) so its rim is not exactly half the end-disc radius,
+  // which lines its vertices up on the disc's chords and leaves zero-area triangles
+  const hr = H.coreR, cs = 0.45 * d.s;
   const core = revolveZ([[0, -0.01], [hr + cs + 0.01, -0.01], [hr, cs], [hr, T - cs], [hr + cs + 0.01, T + 0.01], [0, T + 0.01]]);
   return body.subtract(core);
 }
