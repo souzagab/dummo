@@ -1,0 +1,25 @@
+{
+  "name": "dummo",
+  "version": "0.1.0",
+  "description": "Design, pose and export 3D-printable articulated action figures in the browser.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/check.ts"
+  },
+  "type": "module",
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "manifold-3d": "^3.5.5",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "private": true
+}
