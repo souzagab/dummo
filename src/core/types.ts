@@ -57,6 +57,18 @@ export type Tolerances = {
   slide: number;       // clearance for sliding fits (swivel chamber, mortise)
 };
 
+/** Character skin: armor shapes taken from an imported model. */
+export type SkinSettings = {
+  enabled: boolean;
+  modelId: string;   // content hash of the imported model ('' = none)
+  modelName: string;
+  transform: { scale: number; rot: Vec3; offset: Vec3 }; // model -> figure (bind pose) space
+  bindPose: Pose;     // pose the model is standing in
+  detail: number;     // voxel size, mm
+  close: number;      // seal openings narrower than ~2x this, mm
+  gap: number;        // gap between neighbouring skin pieces, mm
+};
+
 export type FigureSpec = {
   version: 1;
   name: string;
@@ -65,6 +77,7 @@ export type FigureSpec = {
   proportions: Proportions;
   style: Style;
   tolerances: Tolerances;
+  skin: SkinSettings;
 };
 
 /** Joint angles in degrees: [x, y, z]. Hinges use x, swivels use y. */

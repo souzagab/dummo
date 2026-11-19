@@ -1,4 +1,4 @@
-import type { Colors, FigureSpec, PrintSettings, Proportions, Style, Tolerances } from './types.ts';
+import type { Colors, FigureSpec, PrintSettings, Proportions, SkinSettings, Style, Tolerances } from './types.ts';
 
 export const MATERIALS: Record<string, Tolerances> = {
   'PETG': { socketSpine: 0.30, socketLimb: 0.20, hinge: 0.10, swivel: 0.15, armor: 0.10, peg: 0.15, slide: 0.10 },
@@ -27,14 +27,14 @@ export const DEFAULT_PROPORTIONS: Proportions = {
 
 /** [min, max] at scale 1. Minimums keep neighbouring joints from colliding. */
 export const PROPORTION_LIMITS: Record<keyof Proportions, [number, number]> = {
-  hipHalf: [7.7, 12],
+  hipHalf: [7.7, 16],
   waistLen: [9.5, 16],
   abdomenLen: [9.5, 18],
-  chestLen: [14, 28],
+  chestLen: [14, 32],
   shoulderY: [10, 24],
-  shoulderHalf: [10, 15],
+  shoulderHalf: [10, 32],
   neckLen: [7, 14],
-  thighLen: [14, 30],
+  thighLen: [14, 36],
   shinLen: [18, 40],
   upperArmLen: [9, 20],
   forearmLen: [13, 26],
@@ -70,6 +70,14 @@ export const DEFAULT_STYLE: Style = {
   armor: { head: true, chest: true, abdomen: true, pelvis: true, arms: true, legs: true, feet: true },
 };
 
+export function defaultSkin(): SkinSettings {
+  return {
+    enabled: false, modelId: '', modelName: '',
+    transform: { scale: 1, rot: [0, 0, 0], offset: [0, 0, 0] },
+    bindPose: {}, detail: 0.45, close: 2.5, gap: 0.6,
+  };
+}
+
 export function defaultSpec(): FigureSpec {
   return {
     version: 1,
@@ -79,6 +87,7 @@ export function defaultSpec(): FigureSpec {
     proportions: { ...DEFAULT_PROPORTIONS },
     style: structuredClone(DEFAULT_STYLE),
     tolerances: { ...MATERIALS['PETG'] },
+    skin: defaultSkin(),
   };
 }
 
@@ -121,6 +130,7 @@ export function applyPreset(base: FigureSpec, name: string): FigureSpec {
   out.style.handPose = base.style.handPose;
   out.style.weapon = base.style.weapon;
   out.style.armor = { ...base.style.armor };
+  out.skin = structuredClone(base.skin);
   Object.assign(out.proportions, p.proportions ?? {});
   const { armor, ...styleRest } = (p.style ?? {}) as DeepPartial<Style>;
   Object.assign(out.style, styleRest);
@@ -146,6 +156,13 @@ export function sanitizeSpec(spec: FigureSpec): FigureSpec {
   st.handSize = clamp(st.handSize, 0.8, 1.3);
   st.footSize = clamp(st.footSize, 0.8, 1.3);
   st.ankleTilt = clamp(st.ankleTilt, 0, 15);
+  const sk = s.skin ?? defaultSkin();
+  s.skin = sk;
+  sk.detail = clamp(Number(sk.detail) || 0.6, 0.3, 1.5);
+  sk.close = clamp(Number(sk.close) || 0, 0, 8);
+  sk.gap = clamp(Number(sk.gap) || 0.6, 0.2, 3);
+  sk.transform.scale = clamp(Number(sk.transform.scale) || 1, 1e-4, 1e4);
+  if (!sk.modelId) sk.enabled = false;
   const t = s.tolerances;
   for (const k of Object.keys(t) as (keyof Tolerances)[]) t[k] = clamp(Number(t[k]) || 0, 0, 0.6);
   return s;

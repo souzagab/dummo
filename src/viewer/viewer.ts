@@ -45,6 +45,10 @@ export class Viewer {
   private selected: string | null = null;
   private framedOnce = false;
   display: Display = { armor: true, frame: true, outlines: true, explode: 0, stand: false };
+  private ghost: THREE.Mesh | null = null;
+  private ghostMat = new THREE.MeshStandardMaterial({
+    color: 0x4f8cff, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide, roughness: 0.6,
+  });
   onSelect: (node: string | null) => void = () => {};
 
   private mats = {
@@ -216,7 +220,7 @@ export class Viewer {
     mesh.material = g === 'accessory' ? this.mats.accessory : g === 'armor' ? (sel ? this.mats.armorSel : this.mats.armor) : sel ? this.mats.frameSel : this.mats.frame;
     const visible = this.entries.has(mesh.userData.key as string);
     const isWeapon = mesh.userData.key === 'weapon';
-    const show = isWeapon ? this.display.frame : g === 'accessory' ? this.display.stand : g === 'armor' ? this.display.armor : this.display.frame;
+    const show = mesh.userData.key === 'dowel' ? false : isWeapon ? this.display.frame : g === 'accessory' ? this.display.stand : g === 'armor' ? this.display.armor : this.display.frame;
     mesh.visible = visible && show;
     const line = mesh.children[0] as THREE.LineSegments | undefined;
     if (line) line.visible = this.display.outlines;
@@ -284,6 +288,33 @@ export class Viewer {
     }
     if (Number.isFinite(minY)) this.figure.position.y = -minY;
     this.stand.position.y = this.restGround;
+    this.requestRender();
+  }
+
+  // ---------- imported model overlay ----------
+
+  setGhost(mesh: { positions: Float32Array; indices: Uint32Array } | null): void {
+    if (this.ghost) { this.ghost.geometry.dispose(); this.ghost.removeFromParent(); this.ghost = null; }
+    if (mesh) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+      g.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+      g.computeVertexNormals();
+      this.ghost = new THREE.Mesh(g, this.ghostMat);
+      this.ghost.matrixAutoUpdate = false;
+      this.ghost.renderOrder = 10;
+      this.ghost.raycast = () => {};
+      this.figure.add(this.ghost);
+    }
+    this.requestRender();
+  }
+
+  setGhostView(matrix: THREE.Matrix4, show: boolean, opacity: number): void {
+    if (!this.ghost) return;
+    this.ghost.matrix.copy(matrix);
+    this.ghost.matrixWorldNeedsUpdate = true;
+    this.ghost.visible = show;
+    this.ghostMat.opacity = opacity;
     this.requestRender();
   }
 

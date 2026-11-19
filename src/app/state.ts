@@ -4,7 +4,7 @@ import { POSES } from '../core/pose.ts';
 import type { Colors, FigureSpec, Pose, PrintSettings } from '../core/types.ts';
 import type { Display } from '../viewer/viewer.ts';
 
-export type Tab = 'design' | 'pose' | 'print' | 'guide';
+export type Tab = 'design' | 'skin' | 'pose' | 'print' | 'guide';
 export type Quality = 'draft' | 'normal' | 'fine';
 
 export type ViewState = {
@@ -14,6 +14,7 @@ export type ViewState = {
   display: Display;
   quality: Quality;
   panelOpen: boolean;
+  ghost: { show: boolean; opacity: number };
 };
 
 export type AppState = {
@@ -169,6 +170,7 @@ function loadInitial(): AppState {
     mode: 'figure', tab: 'design', selected: null, quality: 'normal',
     display: { armor: true, frame: true, outlines: true, explode: 0, stand: false },
     panelOpen: true,
+    ghost: { show: true, opacity: 0.35 },
   };
   const base: AppState = {
     spec: defaultSpec(), pose: structuredClone(POSES.Rest), print: { ...DEFAULT_PRINT }, colors: { ...DEFAULT_COLORS }, view,
@@ -190,6 +192,11 @@ function loadInitial(): AppState {
   return base;
 }
 
+/** Accepts a saved design ({ spec, pose, ... }) or a bare figure spec. */
 export function specFromFile(text: string): Partial<AppState> {
-  return fromData(JSON.parse(text));
+  const data = JSON.parse(text);
+  const bare = data && typeof data === 'object' && !('spec' in data) && ('proportions' in data || 'style' in data || 'skin' in data);
+  const out = fromData(bare ? { spec: data } : data);
+  if (bare) delete out.pose;
+  return out;
 }

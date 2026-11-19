@@ -1,7 +1,9 @@
 import './style.css';
 import { Box3, Matrix4, Vector3 } from 'three';
 import { Store, specFromFile, type AppState } from './app/state.ts';
-import { partList, restGround, type PartDef } from './core/catalog.ts';
+import { partList, restGround, skinActive, type PartDef } from './core/catalog.ts';
+import { autoFit, ghostMatrix, parseModel, restoreModel, storeModel } from './app/models.ts';
+import type { SkinModel } from './core/skinctx.ts';
 import { escapeXml, slug, stlBinary, threeMF, zip, type TmfItem, type TmfObject } from './core/export.ts';
 import { packPlates, placementMatrix, prepareForPrint, type Prepared } from './core/layout.ts';
 import { buildRig, clampPose, type Rig } from './core/skeleton.ts';
@@ -78,7 +80,20 @@ app.append(header, h('main', { class: 'layout' }, panel, viewport));
 const viewer = new Viewer(viewport);
 const preview = new GeometryClient();
 let exporter: GeometryClient | null = null;
+let model: SkinModel | null = null;
+let restoring = true;
 preview.onError = (m) => toast(`Geometry error: ${m}`, 'error');
+preview.onSkin = (state, ms) => {
+  if (state === 'building') setStatus('Fitting the skin to the frame…', 0.15);
+  else if (state === 'missing' && !restoring) toast('The skin model is not loaded in this browser. Load it again in the Skin tab.', 'error');
+  else if (ms !== undefined && ms > 0) setStatus(`Skin field ready (${(ms / 1000).toFixed(1)} s), building pieces…`, 0.3);
+};
+
+/** Live preview uses a coarser skin than exports. */
+function previewSpec(spec: FigureSpec): FigureSpec {
+  if (!skinActive(spec)) return spec;
+  return { ...spec, skin: { ...spec.skin, detail: Math.max(spec.skin.detail, 0.7) } };
+}
 
 let rig: Rig = buildRig(store.state.spec);
 let parts: PartDef[] = partList(store.state.spec);
@@ -110,7 +125,9 @@ async function rebuild(spec: FigureSpec, key: string): Promise<void> {
   setStatus('Building parts…', 0);
   const t0 = performance.now();
   try {
-    const res = await preview.build(spec, PREVIEW_SEGMENTS, {
+    const pspec = previewSpec(spec);
+    const res = await preview.build(pspec, PREVIEW_SEGMENTS, {
+      skinEdge: Math.max(pspec.skin.detail, 0.8),
       onPart: (k, mesh, done, total) => {
         meshes.set(k, mesh);
         viewer.setGeometry(k, mesh);
@@ -225,13 +242,25 @@ function exportGroups(): PartGroup[] {
 }
 
 // ---------- exports ----------
+function getExporter(): GeometryClient {
+  if (!exporter) {
+    exporter = new GeometryClient();
+    exporter.onError = (m) => toast(`Export error: ${m}`, 'error');
+    exporter.onSkin = (state) => { if (state === 'building') setStatus('Fitting the skin at full detail…', 0.1); };
+    exporter.setModel(model);
+  }
+  return exporter;
+}
+
 async function exportMeshes(): Promise<Map<string, MeshData | null> | null> {
-  exporter ??= new GeometryClient();
-  exporter.onError = (m) => toast(`Export error: ${m}`, 'error');
+  const ex = getExporter();
   const segs = EXPORT_SEGMENTS[store.state.view.quality];
   setStatus('Preparing print files…', 0);
   try {
-    return await exporter.build(store.state.spec, segs, { onPart: (_k, _m, d, t) => setStatus(`Preparing print files ${d}/${t}`, d / t) });
+    return await ex.build(store.state.spec, segs, {
+      skinEdge: store.state.spec.skin.detail,
+      onPart: (_k, _m, d, t) => setStatus(`Preparing print files ${d}/${t}`, d / t),
+    });
   } catch (e) {
     toast(String((e as Error).message), 'error');
     return null;
@@ -314,10 +343,10 @@ async function exportAll(): Promise<void> {
 }
 
 async function exportCalibration(): Promise<void> {
-  exporter ??= new GeometryClient();
+  const ex = getExporter();
   setStatus('Building test coupon…', 0.3);
   try {
-    const res = await exporter.build(store.state.spec, EXPORT_SEGMENTS.normal, { calibration: true });
+    const res = await ex.build(store.state.spec, EXPORT_SEGMENTS.normal, { calibration: true });
     const items: PlatePlan['plates'][number]['items'] = [];
     const prepList: { key: string; prep: Prepared }[] = [];
     for (const [k, m] of res) if (m) prepList.push({ key: k, prep: prepareForPrint(m, new Matrix4()) });
@@ -385,6 +414,70 @@ function screenshot(): void {
   a.remove();
 }
 
+// ---------- character model ----------
+function setModel(m: SkinModel | null): void {
+  model = m;
+  preview.setModel(m);
+  exporter?.setModel(m);
+  viewer.setGhost(m);
+  syncGhost(store.state);
+}
+
+function syncGhost(s: AppState): void {
+  const show = !!model && s.view.ghost.show && !(s.spec.skin.enabled && s.view.mode === 'figure' && !s.view.display.frame);
+  viewer.setGhostView(ghostMatrix(s.spec.skin.transform), show && s.view.mode === 'figure', s.view.ghost.opacity);
+}
+
+function fitTransform(m: SkinModel, keepRot = false): FigureSpec['skin']['transform'] {
+  const spec = store.state.spec;
+  const h = Math.max(60, figureHeight());
+  return autoFit(m, h, -restGround(spec), keepRot ? spec.skin.transform.rot : undefined);
+}
+
+async function loadModel(f: File): Promise<void> {
+  setStatus(`Reading ${f.name}…`, 0.2);
+  try {
+    const m = await parseModel(f);
+    setModel(m);
+    void storeModel(m);
+    const sp = structuredClone(store.state.spec);
+    sp.skin = { ...sp.skin, modelId: m.id, modelName: m.name, enabled: false, transform: fitTransform(m), bindPose: {} };
+    store.update({ spec: sp, view: { ...store.state.view, tab: 'skin', ghost: { ...store.state.view.ghost, show: true } } }, true);
+    setStatus(`Loaded ${m.name}`, 1);
+    toast('Model loaded. Line it up, pose the figure to match, then bind.');
+  } catch (e) {
+    setStatus('Could not read that model', 1);
+    toast(String((e as Error).message ?? e), 'error');
+  }
+}
+
+function removeModel(): void {
+  setModel(null);
+  void storeModel(null);
+  const sp = structuredClone(store.state.spec);
+  sp.skin = { ...sp.skin, modelId: '', modelName: '', enabled: false };
+  store.update({ spec: sp }, true);
+}
+
+function bindPose(): void {
+  const sp = structuredClone(store.state.spec);
+  sp.skin.bindPose = structuredClone(store.state.pose);
+  sp.skin.enabled = true;
+  store.update({ spec: sp, view: { ...store.state.view, ghost: { ...store.state.view.ghost, show: false } } }, true);
+  toast('Bound. The armor now follows the model; posing moves it with the joints.');
+}
+
+window.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
+window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dragging');
+  const f = e.dataTransfer?.files?.[0];
+  if (!f) return;
+  if (f.name.toLowerCase().endsWith('.json')) void loadSpec(f);
+  else void loadModel(f);
+});
+
 function refitView(): void {
   viewer.setMode(store.state.view.mode);
 }
@@ -395,7 +488,17 @@ buildPanel(panel, {
   rig: () => rig,
   stats,
   height: figureHeight,
+  model: () => (model ? { name: model.name, tris: model.indices.length / 3 } : null),
   actions: {
+    loadModel: (f) => void loadModel(f),
+    removeModel,
+    autoFit: () => {
+      if (!model) return;
+      const sp = structuredClone(store.state.spec);
+      sp.skin.transform = fitTransform(model, true);
+      store.update({ spec: sp }, true);
+    },
+    bindPose,
     exportGroup: (g) => void exportGroup(g),
     exportStl: () => void exportStl(),
     exportAll: () => void exportAll(),
@@ -425,6 +528,7 @@ store.subscribe((s, changed) => {
     }
   }
   if (changed.has('print')) refreshPlates();
+  if (changed.has('spec') || changed.has('view')) syncGhost(s);
   syncChrome(s);
 });
 
@@ -457,6 +561,15 @@ window.addEventListener('keydown', (e) => {
 });
 
 // first paint
+void restoreModel().then((m) => {
+  restoring = false;
+  if (m && m.id === store.state.spec.skin.modelId) {
+    setModel(m);
+    if (skinActive(store.state.spec)) { builtSpec = ''; applySpec(store.state.spec); }
+  } else if (skinActive(store.state.spec)) {
+    toast('The skin model is not stored in this browser. Load it again in the Skin tab.', 'error');
+  }
+});
 viewer.setColors(store.state.colors);
 viewer.setDisplay(store.state.view.display);
 applySpec(store.state.spec);

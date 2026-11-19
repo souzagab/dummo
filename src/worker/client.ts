@@ -2,6 +2,7 @@
 // supersedes older ones (the worker abandons them between part groups).
 import type { FigureSpec, MeshData } from '../core/types.ts';
 import type { WorkerIn, WorkerOut } from './protocol.ts';
+import type { SkinModel } from '../core/skinctx.ts';
 
 type Pending = {
   onPart?: (key: string, mesh: MeshData | null, done: number, total: number) => void;
@@ -15,6 +16,7 @@ export class GeometryClient {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   onError: (msg: string) => void = (m) => console.error(m);
+  onSkin: (state: 'building' | 'ready' | 'missing', ms?: number) => void = () => {};
 
   constructor() {
     this.worker = new Worker(new URL('./geometry.worker.ts', import.meta.url), { type: 'module' });
@@ -22,13 +24,20 @@ export class GeometryClient {
     this.worker.onerror = (e) => this.onError(e.message || 'geometry worker failed to start');
   }
 
-  build(spec: FigureSpec, segments: number, opts: { keys?: string[]; calibration?: boolean; onPart?: Pending['onPart'] } = {}) {
+  setModel(model: SkinModel | null): void {
+    // copy so the caller keeps its arrays
+    const m = model ? { ...model, positions: model.positions.slice(), indices: model.indices.slice() } : null;
+    const msg: WorkerIn = { type: 'model', model: m };
+    this.worker.postMessage(msg, m ? [m.positions.buffer, m.indices.buffer] : []);
+  }
+
+  build(spec: FigureSpec, segments: number, opts: { keys?: string[]; calibration?: boolean; skinEdge?: number; onPart?: Pending['onPart'] } = {}) {
     const id = this.nextId++;
     // older requests will never complete: settle them now
     for (const [pid, p] of this.pending) { p.reject(new Error('superseded')); this.pending.delete(pid); }
     return new Promise<Map<string, MeshData | null>>((resolve, reject) => {
       this.pending.set(id, { onPart: opts.onPart, resolve, reject, out: new Map() });
-      const msg: WorkerIn = { type: 'build', id, spec, segments, keys: opts.keys, calibration: opts.calibration };
+      const msg: WorkerIn = { type: 'build', id, spec, segments, skinEdge: opts.skinEdge ?? 1, keys: opts.keys, calibration: opts.calibration };
       this.worker.postMessage(msg);
     });
   }
@@ -36,6 +45,7 @@ export class GeometryClient {
   private handle(msg: WorkerOut) {
     const p = this.pending.get(msg.id);
     if (msg.type === 'error') { this.onError(msg.message); return; }
+    if (msg.type === 'skin') { if (this.pending.has(msg.id)) this.onSkin(msg.state, msg.ms); return; }
     if (!p) return;
     if (msg.type === 'part') {
       p.out.set(msg.key, msg.mesh);

@@ -46,7 +46,7 @@ export type Control<T> = { el: HTMLElement; set: (v: T) => void };
 
 export function slider(opts: {
   label: string; min: number; max: number; step: number; value: number; unit?: string; digits?: number;
-  hint?: string; onInput: (v: number) => void; onCommit?: () => void;
+  hint?: string; format?: (v: number) => string; onInput: (v: number) => void; onCommit?: () => void;
 }): Control<number> {
   const digits = opts.digits ?? (opts.step < 0.1 ? 2 : opts.step < 1 ? 1 : 0);
   const range = h('input', { type: 'range', min: opts.min, max: opts.max, step: opts.step, value: opts.value, 'aria-label': opts.label });
@@ -70,9 +70,11 @@ export function slider(opts: {
     opts.onCommit?.();
   });
   fill();
+  const readout = opts.format ? h('span', { class: 'readout' }, opts.format(opts.value)) : null;
+  if (readout) range.addEventListener('input', () => { readout.textContent = opts.format!(Number(range.value)); });
   const el = h('label', { class: 'control slider', title: opts.hint ?? '' },
     h('span', { class: 'control-head' }, h('span', { class: 'control-label' }, opts.label),
-      h('span', { class: 'control-value' }, num, opts.unit ? h('span', { class: 'unit' }, opts.unit) : null)),
+      readout ?? h('span', { class: 'control-value' }, num, opts.unit ? h('span', { class: 'unit' }, opts.unit) : null)),
     range);
   return {
     el,
@@ -80,6 +82,7 @@ export function slider(opts: {
       if (document.activeElement === range || document.activeElement === num) return;
       range.value = String(v);
       num.value = v.toFixed(digits);
+      if (readout) readout.textContent = opts.format!(v);
       fill();
     },
   };
@@ -138,9 +141,27 @@ export function toast(msg: string, kind: 'info' | 'error' = 'info'): void {
 export function download(name: string, data: Uint8Array | string, mime: string): void {
   const blob = new Blob([typeof data === 'string' ? data : (data as BlobPart)], { type: mime });
   const url = URL.createObjectURL(blob);
-  const a = h('a', { href: url, download: name });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  const save = () => {
+    const a = h('a', { href: url, download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+  };
+  // browsers hold downloads that start long after the click (slow exports): ask for a click
+  const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  if (!ua || ua.isActive) save();
+  else readyToast(name, blob.size, save);
+}
+
+function readyToast(name: string, size: number, save: () => void): void {
+  const host = document.getElementById('toasts') ?? document.body.appendChild(h('div', { id: 'toasts' }));
+  const mb = size > 1e6 ? `${(size / 1e6).toFixed(1)} MB` : `${Math.ceil(size / 1e3)} kB`;
+  const t = h('div', { class: 'toast ready', role: 'status' });
+  t.append(
+    h('span', {}, `${name} is ready (${mb})`),
+    h('button', { type: 'button', class: 'btn small', onclick: () => { save(); t.remove(); } }, 'Save file'),
+    h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dismiss', onclick: () => t.remove() }, icon('close', 14)),
+  );
+  host.append(t);
 }

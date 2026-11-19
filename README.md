@@ -15,6 +15,8 @@ part comes out already oriented for printing, with snap-fit joints and no suppor
   scale from 60% to 250%. Presets: Standard, Heroic, Slim, Chibi, Brute.
 - **Armor styling**: head shapes (egg, round, block, visor), head size, chest width, limb bulk,
   facet amount, an engraved chest emblem, and an on/off switch for each armor piece.
+- **Character skins**: load any humanoid model (STL, OBJ, GLB/glTF, 3MF, PLY) and turn it into
+  posable, printable armor on the dummo frame. Open or messy meshes are solidified automatically.
 - **Hands and gear**: fist, open or grip hands. Grip hands can hold a printable sword or staff.
 - **Posing**: 25 joints with real joint limits, pose presets (T-pose, Hero, Walk, Run, Kick…),
   mirroring, random poses. Click any part to grab its joint. The figure stays on the ground
@@ -50,6 +52,24 @@ ankle's tongue.
 Fit values (interference and clearance) are absolute: they stay the same at every scale, because
 printer error doesn't grow with the model.
 
+### Character skins
+
+An imported model is voxelized and sealed: gaps narrower than a set radius close, so open shells
+and overlapping parts become one solid. Near the real surface, the voxel distances are replaced
+with exact point-to-triangle distances, so flat faces, crests and slits survive. Each bone of the
+rig, in the pose the model was bound in, claims the nearest part of the solid. Each region is then
+meshed with a level set and handed to the regular armor builders as their outer shape.
+
+Those builders still add every mechanical cut: frame pockets, joint swing clearance, slide-on
+channels, dowel holes, and collars around the hip and shoulder swivels. The skin therefore
+articulates exactly like the stock armor.
+
+There is also a headless version:
+
+```bash
+node scripts/skin.ts model.stl out/ [spec.json]   # print-ready parts + assembled preview
+```
+
 ## Development
 
 ```bash
@@ -66,7 +86,7 @@ Requires Node 24 (the check script runs TypeScript directly).
 ```
 src/
   core/
-    geometry/      joint primitives (kit), frame parts, armor, stand, weapons, test coupon
+    geometry/      joint primitives (kit), frame parts, armor, skins, stand, weapons, test coupon
     catalog.ts     every part: how it's built and where it mounts on the rig
     skeleton.ts    joint hierarchy, pivots, limits
     pose.ts        forward kinematics + pose presets
@@ -75,7 +95,8 @@ src/
   worker/          geometry runs in a Web Worker (manifold-3d, WebAssembly)
   viewer/          three.js scene, posing, plates view
   ui/              panel and controls
-scripts/check.ts   headless geometry and collision test (runs in CI before deploying)
+scripts/check.ts   headless geometry, watertightness and collision tests (run in CI before deploying)
+scripts/skin.ts    headless character-skin builder
 ```
 
 Pushing to `main` runs the checks, builds, and deploys to GitHub Pages.

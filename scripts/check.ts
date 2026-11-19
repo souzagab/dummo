@@ -3,7 +3,9 @@
 // Run: node scripts/check.ts [--fast]
 import Module from 'manifold-3d';
 import type { Manifold, Mat4 } from 'manifold-3d';
-import { BUILDERS, CALIBRATION, partList } from '../src/core/catalog.ts';
+import { BUILDERS, buildersFor, CALIBRATION, partList, type BuildCtx } from '../src/core/catalog.ts';
+import { createSkinContext, modelId } from '../src/core/skinctx.ts';
+import { isWatertight, meshOf } from '../src/core/geometry/mesh.ts';
 import { applyPreset, defaultSpec, PRESETS, sanitizeSpec } from '../src/core/defaults.ts';
 import { collect, initGeo, setSegments } from '../src/core/geometry/geo.ts';
 import { jointDims } from '../src/core/geometry/kit.ts';
@@ -33,46 +35,31 @@ const EXPECTED = (a: string, b: string) => {
   return pairs.includes(k) || halves.includes(k);
 };
 
-function degenerate(m: Manifold): number {
-  const mesh = m.getMesh();
-  const v = mesh.vertProperties, t = mesh.triVerts, n = mesh.numProp;
-  let bad = 0;
-  for (let i = 0; i < t.length; i += 3) {
-    const a = t[i] * n, b = t[i + 1] * n, c = t[i + 2] * n;
-    const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2];
-    const wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
-    const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
-    if (Math.hypot(cx, cy, cz) < 1e-9) bad++;
-  }
-  return bad;
-}
-
 let failures = 0;
 const fail = (msg: string) => { failures++; console.log('  FAIL ' + msg); };
 
-function checkSpec(name: string, spec: FigureSpec) {
+function checkSpec(name: string, spec: FigureSpec, ctx: BuildCtx = {}) {
   const t0 = performance.now();
   const d = jointDims(spec);
   const solids = new Map<string, Manifold>();
-  for (const g of BUILDERS) {
-    const res = g.build(d, spec);
+  for (const g of buildersFor(spec)) {
+    const res = g.build(d, spec, ctx);
     for (const k of g.keys) {
       const m = res[k];
       if (!m) continue;
       if (m.status() !== 'NoError') fail(`${name}: ${k} status ${m.status()}`);
       if (m.isEmpty() || m.volume() < 1) fail(`${name}: ${k} empty (vol ${m.volume().toFixed(2)})`);
       const bb = m.boundingBox();
-      if (!k.startsWith('stand') && k !== 'foot' && !k.includes('sleeve') && !k.endsWith('-front') && !k.endsWith('-back') && bb.min[2] < -1e-3)
+      if (!k.startsWith('stand') && !k.startsWith('foot') && !k.includes('sleeve') && !k.endsWith('-front') && !k.endsWith('-back') && bb.min[2] < -1e-3)
         fail(`${name}: ${k} below the bed (z ${bb.min[2].toFixed(3)})`);
-      const deg = degenerate(m);
-      if (deg) fail(`${name}: ${k} has ${deg} zero-area triangles`);
+      if (!isWatertight(meshOf(m))) fail(`${name}: ${k} exports a mesh that is not watertight`);
       const parts = m.decompose();
       if (parts.length > 1 && !k.endsWith('-back')) fail(`${name}: ${k} has ${parts.length} disconnected pieces`);
       solids.set(k, m);
     }
   }
-  const defs = partList(spec).filter((p) => (p.group !== 'accessory' || p.key === 'weapon') && solids.has(p.key));
-  const posed = restToPosed(buildRig(spec), POSES.Rest);
+  const defs = partList(spec).filter((p) => (p.group !== 'accessory' || p.key === 'weapon') && p.node !== 'world' && solids.has(p.key));
+  const posed = restToPosed(buildRig(spec), spec.skin.enabled ? spec.skin.bindPose : POSES.Rest);
   const world = defs.map((p) => ({
     id: p.id, group: p.group,
     m: solids.get(p.key)!.transform(posed[p.node].clone().multiply(p.mount).elements as unknown as Mat4),
@@ -107,6 +94,28 @@ for (const scale of [0.7, 1.6]) {
   s.style.weapon = 'staff'; checkSpec('staff', sanitizeSpec(s));
   s.style.weapon = 'sword'; s.style.handSize = 1.3; checkSpec('big hands', sanitizeSpec(s)); s.style.handSize = 1;
   for (const hs of ['round', 'block', 'visor'] as const) { s.style.headShape = hs; checkSpec(`head ${hs}`, sanitizeSpec(s)); }
+}
+{
+  // character skin: re-skin the default figure with its own assembled armor as the "model"
+  const base = defaultSpec();
+  const d = jointDims(base);
+  const solids = new Map<string, Manifold>();
+  for (const g of BUILDERS) { const r = g.build(d, base); for (const k of g.keys) if (r[k]) solids.set(k, r[k]!); }
+  const pos: number[] = [], idx: number[] = [];
+  const restPosed = restToPosed(buildRig(base), POSES.Rest);
+  for (const p of partList(base)) {
+    if (p.group !== 'armor' || !solids.has(p.key)) continue;
+    const mesh = solids.get(p.key)!.transform(restPosed[p.node].clone().multiply(p.mount).elements as unknown as Mat4).getMesh();
+    const off = pos.length / 3, n = mesh.numProp;
+    for (let i = 0; i < mesh.vertProperties.length; i += n) pos.push(mesh.vertProperties[i], mesh.vertProperties[i + 1], mesh.vertProperties[i + 2]);
+    for (const t of mesh.triVerts) idx.push(t + off);
+  }
+  collect();
+  const positions = new Float32Array(pos), indices = new Uint32Array(idx);
+  const spec = sanitizeSpec({ ...base, skin: { ...base.skin, enabled: true, modelId: modelId(positions, indices), detail: 0.6, bindPose: structuredClone(POSES.Rest) } });
+  const ctx = createSkinContext(wasm, spec, jointDims(spec), { id: spec.skin.modelId, name: 'self', positions, indices }, 0.8);
+  collect();
+  checkSpec('skin', spec, ctx);
 }
 {
   const d = jointDims(defaultSpec());

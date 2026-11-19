@@ -88,7 +88,7 @@ body.panel-closed .panel { border-right: 0; }
 /* ---------- tabs ---------- */
 .tabs { display: flex; gap: 4px; padding: 10px 12px 0; border-bottom: 1px solid var(--line); flex: none; }
 .tab {
-  flex: 1; border: 0; background: transparent; padding: 9px 6px 11px; font-weight: 600; color: var(--muted);
+  flex: 1; border: 0; background: transparent; padding: 9px 4px 11px; font-weight: 600; color: var(--muted); font-size: 13.5px;
   border-bottom: 2px solid transparent; margin-bottom: -1px;
 }
 .tab:hover { color: var(--ink); }
@@ -224,6 +224,18 @@ input[type=range]::-moz-range-thumb {
 .dot.armor { background: var(--accent); }
 .dot.accessory { background: #9a9286; }
 
+.dropzone {
+  border: 1.5px dashed var(--line-2); border-radius: var(--radius); background: var(--bg); padding: 16px 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--ink-2); text-align: center;
+}
+.dropzone:hover, body.dragging .dropzone { border-color: var(--accent); color: var(--ink); }
+body.dragging .viewport::after {
+  content: 'Drop the model to load it'; position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 16px;
+  display: grid; place-items: center; font-weight: 700; color: var(--ink); background: color-mix(in srgb, var(--panel) 60%, transparent); z-index: 5;
+}
+.model-info { display: flex; flex-direction: column; gap: 2px; }
+.steps { margin: 0; padding-left: 18px; color: var(--ink-2); display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.tab-page > .tab-page { gap: 10px; }
 .guide p, .guide li { color: var(--ink-2); margin: 0; }
 .guide ul, .guide ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
 .guide b { color: var(--ink); }
@@ -271,6 +283,8 @@ body.mode-plates .figure-only { display: none; }
   font-size: 13px; transition: opacity .4s, transform .4s;
 }
 .toast.error { background: var(--danger); color: #fff; }
+.toast.ready { display: flex; align-items: center; gap: 10px; }
+.toast.ready .icon-btn { width: 26px; height: 26px; color: inherit; }
 .toast.out { opacity: 0; transform: translateY(6px); }
 
 /* ---------- small screens ---------- */

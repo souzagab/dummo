@@ -1,18 +1,26 @@
 import { applyPreset, MATERIAL_DENSITY, MATERIALS, PRESETS, PROPORTION_LABELS, PROPORTION_LIMITS } from '../core/defaults.ts';
 import { POSES } from '../core/pose.ts';
 import { mirrorPose, type Rig, type RigNode } from '../core/skeleton.ts';
-import type { Emblem, FigureSpec, HandPose, HeadShape, Proportions, Tolerances, Vec3, Weapon } from '../core/types.ts';
+import type { Emblem, FigureSpec, HandPose, HeadShape, Proportions, SkinSettings, Tolerances, Vec3, Weapon } from '../core/types.ts';
+import { MODEL_ACCEPT } from '../app/models.ts';
 import type { AppState, Quality, Store, Tab } from '../app/state.ts';
 import { colorPick, details, h, icon, section, segmented, select, slider, toggle, type Control } from './dom.ts';
 
 export type PartStat = { key: string; label: string; group: string; qty: number; w: number; h: number; d: number; volume: number };
+
+export type ModelInfo = { name: string; tris: number } | null;
 
 export type PanelCtx = {
   store: Store;
   rig: () => Rig;
   stats: () => PartStat[];
   height: () => number;
+  model: () => ModelInfo;
   actions: {
+    loadModel: (f: File) => void;
+    removeModel: () => void;
+    autoFit: () => void;
+    bindPose: () => void;
     exportGroup: (g: 'frame' | 'armor' | 'accessory') => void;
     exportStl: () => void;
     exportAll: () => void;
@@ -26,6 +34,7 @@ type Synced = { el: HTMLElement; sync: (s: AppState, changed: Set<keyof AppState
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'design', label: 'Design' },
+  { id: 'skin', label: 'Skin' },
   { id: 'pose', label: 'Pose' },
   { id: 'print', label: 'Print' },
   { id: 'guide', label: 'Guide' },
@@ -35,6 +44,7 @@ export function buildPanel(host: HTMLElement, ctx: PanelCtx): void {
   const { store } = ctx;
   const tabs: Record<Tab, Synced> = {
     design: designTab(ctx),
+    skin: skinTab(ctx),
     pose: poseTab(ctx),
     print: printTab(ctx),
     guide: guideTab(),
@@ -186,6 +196,103 @@ function designTab(ctx: PanelCtx): Synced {
     details('Hands & feet', false, hands.el, weapon.el, weaponNote, styleSlider('Hand size', 'handSize', 0.8, 1.3), styleSlider('Foot size', 'footSize', 0.8, 1.3), tilt.el),
     details('Colors', false, colorCtl('Frame', 'frame', swFrame), colorCtl('Armor', 'armor', swArmor), colorCtl('Background', 'background', swBg)),
   );
+  return { el, sync: (s) => syncs.forEach((f) => f(s)) };
+}
+
+// ---------------- Skin ----------------
+
+function skinTab(ctx: PanelCtx): Synced {
+  const { store, actions } = ctx;
+  const syncs: ((s: AppState) => void)[] = [];
+  const setSkin = (fn: (sk: SkinSettings) => void, commit = false) => {
+    const sp = structuredClone(store.state.spec);
+    fn(sp.skin);
+    store.update({ spec: sp }, commit);
+  };
+
+  const fileIn = h('input', { type: 'file', accept: MODEL_ACCEPT, hidden: true });
+  fileIn.addEventListener('change', () => { const f = fileIn.files?.[0]; if (f) actions.loadModel(f); fileIn.value = ''; });
+  const drop = h('button', { type: 'button', class: 'dropzone', onclick: () => fileIn.click() },
+    icon('upload', 22), h('strong', {}, 'Load a character model'), h('span', { class: 'muted small' }, 'STL, OBJ, GLB/glTF, 3MF or PLY. Drop it anywhere on the page.'));
+  const info = h('div', { class: 'model-info' });
+
+  const deg = h('div', { class: 'row wrap' }, ...(['X', 'Y', 'Z'] as const).map((ax, i) => h('button', {
+    type: 'button', class: 'btn ghost small', onclick: () => setSkin((sk) => { sk.transform.rot[i] = ((sk.transform.rot[i] + 90 + 180) % 360) - 180; }, true),
+  }, icon('reset', 14), `Turn ${ax}`)));
+
+  const scale = slider({
+    label: 'Size', min: -3, max: 3, step: 0.002, value: Math.log10(store.state.spec.skin.transform.scale),
+    hint: 'Model scale. Auto-fit sets this from the figure height.',
+    format: (v) => { const x = 10 ** v; return `×${x >= 100 ? x.toFixed(0) : x >= 1 ? x.toFixed(3) : x.toPrecision(3)}`; },
+    onInput: (v) => setSkin((sk) => { sk.transform.scale = 10 ** v; }), onCommit: () => store.commit(),
+  });
+  syncs.push((s) => scale.set(Math.log10(s.spec.skin.transform.scale)));
+  const offs = (['Left / right', 'Up / down', 'Back / front'] as const).map((label, i) => {
+    const c = slider({
+      label, min: -150, max: 150, step: 0.5, value: store.state.spec.skin.transform.offset[i], unit: 'mm', digits: 1,
+      onInput: (v) => setSkin((sk) => { sk.transform.offset[i] = v; }), onCommit: () => store.commit(),
+    });
+    syncs.push((s) => c.set(s.spec.skin.transform.offset[i]));
+    return c.el;
+  });
+  const ghost = toggle({ label: 'Show model', value: store.state.view.ghost.show, onChange: (v) => store.update({ view: { ...store.state.view, ghost: { ...store.state.view.ghost, show: v } } }) });
+  syncs.push((s) => ghost.set(s.view.ghost.show));
+  const opacity = slider({
+    label: 'Model opacity', min: 5, max: 100, step: 1, value: store.state.view.ghost.opacity * 100, unit: '%',
+    onInput: (v) => store.update({ view: { ...store.state.view, ghost: { ...store.state.view.ghost, opacity: v / 100 } } }),
+  });
+  syncs.push((s) => opacity.set(s.view.ghost.opacity * 100));
+
+  const enabled = toggle({
+    label: 'Use the model as armor', value: store.state.spec.skin.enabled,
+    onChange: (v) => setSkin((sk) => { sk.enabled = v; }, true),
+  });
+  syncs.push((s) => enabled.set(s.spec.skin.enabled));
+  const bindInfo = h('p', { class: 'muted small' });
+  syncs.push((s) => {
+    const n = Object.values(s.spec.skin.bindPose).filter((v) => v[0] || v[1] || v[2]).length;
+    bindInfo.textContent = n ? `Bound to a pose with ${n} bent joint${n > 1 ? 's' : ''}.` : 'Bound to the straight rest pose.';
+  });
+  const detail = segmented<string>({
+    label: 'Detail',
+    options: [{ value: '0.8', label: 'Coarse' }, { value: '0.45', label: 'Normal' }, { value: '0.3', label: 'Fine' }],
+    value: String(store.state.spec.skin.detail),
+    onChange: (v) => setSkin((sk) => { sk.detail = Number(v); }, true),
+  });
+  syncs.push((s) => detail.set(String(s.spec.skin.detail)));
+  const close = slider({
+    label: 'Seal openings', min: 0, max: 6, step: 0.25, value: store.state.spec.skin.close, unit: 'mm', digits: 2,
+    hint: 'Holes and gaps narrower than about twice this are filled, so open shells become solid.',
+    onInput: (v) => setSkin((sk) => { sk.close = v; }), onCommit: () => store.commit(),
+  });
+  syncs.push((s) => close.set(s.spec.skin.close));
+  const gap = slider({
+    label: 'Gap between pieces', min: 0.2, max: 2, step: 0.05, value: store.state.spec.skin.gap, unit: 'mm', digits: 2,
+    onInput: (v) => setSkin((sk) => { sk.gap = v; }), onCommit: () => store.commit(),
+  });
+  syncs.push((s) => gap.set(s.spec.skin.gap));
+
+  const loadedOnly = h('div', { class: 'tab-page' },
+    section('Line it up', h('div', { class: 'row wrap' },
+      h('button', { type: 'button', class: 'btn secondary', onclick: () => actions.autoFit() }, icon('focus', 15), 'Auto-fit'),
+      h('button', { type: 'button', class: 'btn ghost', onclick: () => actions.removeModel() }, icon('close', 15), 'Remove')),
+    deg, scale.el, ...offs, ghost.el, opacity.el),
+    section('Skin',
+      h('ol', { class: 'steps' },
+        h('li', {}, 'Pose the figure the way the model stands (', h('b', {}, 'Pose'), ' tab).'),
+        h('li', {}, 'Adjust proportions in ', h('b', {}, 'Design'), ' until every joint sits inside the model.'),
+        h('li', {}, 'Bind, then switch the armor on.')),
+      h('button', { type: 'button', class: 'btn wide', onclick: () => actions.bindPose() }, icon('figure', 16), 'Bind to current pose'),
+      bindInfo, enabled.el, detail.el, close.el, gap.el,
+      h('p', { class: 'muted small' }, 'Skin pieces split around the frame like the regular armor. Halves are joined with small printed dowels. Organic shapes usually need supports.')),
+  );
+  syncs.push(() => {
+    const m = ctx.model();
+    loadedOnly.hidden = !m;
+    info.replaceChildren(...(m ? [h('strong', {}, m.name), h('span', { class: 'muted small' }, `${m.tris.toLocaleString()} triangles`)] : []));
+    info.hidden = !m;
+  });
+  const el = h('div', { class: 'tab-page' }, section('Character model', drop, info, fileIn), loadedOnly);
   return { el, sync: (s) => syncs.forEach((f) => f(s)) };
 }
 
@@ -473,6 +580,15 @@ const GUIDE_HTML = `
 <li>Snap the hip swivels onto the pelvis side balls and the shoulder swivels onto the chest's shoulder balls.</li>
 <li><b>Stand.</b> Press the post into the base and plug its peg into the back port.</li>
 </ol></section>
+<section class="card"><h3>Character skins</h3>
+<p>Any humanoid model can become the armor: a sculpt, a game model, a statue. Load it in the <b>Skin</b> tab (STL, OBJ, GLB/glTF, 3MF or PLY). Then:</p>
+<ol>
+<li><b>Auto-fit</b> scales the model to the figure and stands it on the ground. Use the turn buttons if it lies down or faces the wrong way.</li>
+<li>Pose the figure the way the model stands (T-pose, A-pose or arms down) and adjust proportions until every joint sits inside the model.</li>
+<li><b>Bind</b>. The model is solidified, holes narrower than about twice <i>Seal openings</i> are filled, and each bone takes the nearest part of the body.</li>
+</ol>
+<p>Torso and head pieces split around the frame and are joined by printed dowels. Arms and legs become slide-on sleeves: shoulder and hip pieces wrap the joint, and knees and elbows get side plates. Organic shapes usually need supports.</p>
+</section>
 <section class="card"><h3>Tuning the fit</h3>
 <ul>
 <li>A joint is floppy: raise its grip value by 0.05 mm and reprint that part.</li>

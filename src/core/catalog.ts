@@ -9,21 +9,66 @@ import * as F from './geometry/frame.ts';
 import * as A from './geometry/armor.ts';
 import { calibration, handleZ, standBase, standLayout, standPost, staff, sword } from './geometry/accessories.ts';
 
+/** Extra inputs for builders. skinOuter(piece) returns a character-skin region in the piece's design frame. */
+export type BuildCtx = { skinOuter?: (piece: string) => Manifold | null };
+
 export type BuilderGroup = {
   keys: string[];
-  build: (d: Dims, spec: FigureSpec) => Record<string, Manifold | null>;
+  build: (d: Dims, spec: FigureSpec, ctx?: BuildCtx) => Record<string, Manifold | null>;
 };
 
-const one = (key: string, fn: (d: Dims, spec: FigureSpec) => Manifold | null): BuilderGroup => ({
-  keys: [key], build: (d, spec) => ({ [key]: fn(d, spec) }),
+type Fn<T> = (d: Dims, spec: FigureSpec, ctx: BuildCtx) => T;
+const one = (key: string, fn: Fn<Manifold | null>): BuilderGroup => ({
+  keys: [key], build: (d, spec, ctx = {}) => ({ [key]: fn(d, spec, ctx) }),
 });
-const shell = (prefix: string, fn: (d: Dims, spec: FigureSpec) => A.Shell | null): BuilderGroup => ({
+const shell = (prefix: string, fn: Fn<A.Shell | null>): BuilderGroup => ({
   keys: [`${prefix}-front`, `${prefix}-back`],
-  build: (d, spec) => {
-    const sh = fn(d, spec);
+  build: (d, spec, ctx = {}) => {
+    const sh = fn(d, spec, ctx);
     return { [`${prefix}-front`]: sh?.front ?? null, [`${prefix}-back`]: sh?.back ?? null };
   },
 });
+const so = (ctx: BuildCtx, piece: string) => ctx.skinOuter?.(piece) ?? null;
+
+/** Drop small islands that joint cut-outs can leave behind on organic skin pieces. */
+function clean(m: Manifold | null): Manifold | null {
+  if (!m) return m;
+  // simplify removes the odd zero-area sliver left where flat cuts meet the level-set surface
+  const parts = m.asOriginal().simplify(1e-3).decompose();
+  if (parts.length < 2) return parts[0] ?? null;
+  const big = Math.max(...parts.map((p) => p.volume()));
+  const keep = parts.filter((p) => p.volume() >= Math.max(4, big * 0.1));
+  return keep.length === 1 ? keep[0] : keep.reduce((a, b) => a.add(b));
+}
+const cleanShell = (sh: A.Shell | null): A.Shell | null => (sh ? { front: clean(sh.front)!, back: clean(sh.back)! } : null);
+
+export function skinActive(spec: FigureSpec): boolean {
+  return spec.skin.enabled && !!spec.skin.modelId;
+}
+
+/** Builder groups for a spec. In skin mode left and right limb armor differ, and dowels appear. */
+export function buildersFor(spec: FigureSpec): BuilderGroup[] {
+  if (!skinActive(spec)) return BUILDERS;
+  const base = BUILDERS.filter((g) => !['thigh-sleeve', 'shin-sleeve', 'upper-arm-sleeve', 'forearm-sleeve', 'foot'].includes(g.keys[0])
+    && !g.keys[0].match(/^(head|chest|abdomen|pelvis)-front$/));
+  const out: BuilderGroup[] = [...base,
+    shell('head', (d, s, c) => (s.style.armor.head ? cleanShell(A.headShell(d, s, F.headFrame(d), so(c, 'head'))) : null)),
+    shell('chest', (d, s, c) => (s.style.armor.chest ? cleanShell(A.chestShell(d, s, F.chest(d, s), so(c, 'chest'))) : null)),
+    shell('abdomen', (d, s, c) => (s.style.armor.abdomen ? cleanShell(A.abdomenShell(d, s, F.spineLink(d, s.proportions.abdomenLen * d.s, 'abdomen'), so(c, 'abdomen'))) : null)),
+    shell('pelvis', (d, s, c) => (s.style.armor.pelvis ? cleanShell(A.pelvisShell(d, s, F.spineLink(d, s.proportions.waistLen * d.s, 'waist'), so(c, 'pelvis'))) : null)),
+    one('dowel', (d) => A.dowel(d)),
+  ];
+  for (const side of ['L', 'R']) {
+    out.push(
+      one(`thigh-sleeve-${side}`, (d, s, c) => (s.style.armor.legs ? clean(A.upperSleeve(d, s, s.proportions.thighLen * d.s, 1, so(c, `thigh-sleeve-${side}`))) : null)),
+      one(`shin-sleeve-${side}`, (d, s, c) => (s.style.armor.legs ? clean(A.lowerSleeve(d, s, s.proportions.shinLen * d.s, 1, so(c, `shin-sleeve-${side}`))) : null)),
+      one(`upper-arm-sleeve-${side}`, (d, s, c) => (s.style.armor.arms ? clean(A.upperSleeve(d, s, s.proportions.upperArmLen * d.s, 0.9, so(c, `upper-arm-sleeve-${side}`))) : null)),
+      one(`forearm-sleeve-${side}`, (d, s, c) => (s.style.armor.arms ? clean(A.lowerSleeve(d, s, s.proportions.forearmLen * d.s, 0.9, so(c, `forearm-sleeve-${side}`))) : null)),
+      one(`foot-${side}`, (d, s, c) => (s.style.armor.feet ? clean(A.foot(d, s, so(c, `foot-${side}`))) : null)),
+    );
+  }
+  return out;
+}
 
 export const BUILDERS: BuilderGroup[] = [
   one('pelvis', (d, s) => F.pelvis(d, s).solid),
@@ -104,6 +149,8 @@ const dirOf = (rot: Matrix4, v: Vec3): Vec3 => {
 export function partList(spec: FigureSpec): PartDef[] {
   const d = jointDims(spec);
   const s = d.s, c = d.c, p = rigPoints(spec);
+  const skin = skinActive(spec);
+  const perSide = (key: string, side: string) => (skin ? `${key}-${side}` : key);
   const out: PartDef[] = [];
   const add = (id: string, key: string, label: string, group: PartGroup, node: string, mount: Matrix4,
     printRot: Matrix4 = R.I, explode: Vec3 | null = null) => out.push({ id, key, label, group, node, mount, printRot, explode });
@@ -120,9 +167,10 @@ export function partList(spec: FigureSpec): PartDef[] {
   const headM = mountAt(R.I, [0, 0, c], p.headPivot);
   add('head-frame', 'head-frame', 'Head core', 'frame', 'head', headM);
 
+  // faceted shells print outer face down; skins print split face down
   const shellPair = (prefix: string, label: string, node: string, m: Matrix4) => {
-    add(`${prefix}-front`, `${prefix}-front`, `${label} (front)`, 'armor', node, m, R.FLIP_X, dirOf(m, [0, 0, 1]));
-    add(`${prefix}-back`, `${prefix}-back`, `${label} (back)`, 'armor', node, m, R.I, dirOf(m, [0, 0, -1]));
+    add(`${prefix}-front`, `${prefix}-front`, `${label} (front)`, 'armor', node, m, skin ? R.I : R.FLIP_X, dirOf(m, [0, 0, 1]));
+    add(`${prefix}-back`, `${prefix}-back`, `${label} (back)`, 'armor', node, m, skin ? R.FLIP_X : R.I, dirOf(m, [0, 0, -1]));
   };
   shellPair('head', 'Head', 'head', headM);
   shellPair('chest', 'Chest', 'chest', chestM);
@@ -138,23 +186,23 @@ export function partList(spec: FigureSpec): PartDef[] {
     add(`hip-swivel-${side}`, 'swivel', `Hip swivel (${S})`, 'frame', `hip${side}`, mountAt(sag, [0, 0, c], P('hip')));
     const thighM = mountAt(sag, [0, spec.proportions.thighLen * s, c], P('legDisc'));
     add(`thigh-${side}`, 'thigh', `Thigh (${S})`, 'frame', `thigh${side}`, thighM);
-    add(`thigh-sleeve-${side}`, 'thigh-sleeve', `Thigh armor (${S})`, 'armor', `thigh${side}`, thighM, R.STAND_UP, [0, -1, 0]);
+    add(`thigh-sleeve-${side}`, perSide('thigh-sleeve', side), `Thigh armor (${S})`, 'armor', `thigh${side}`, thighM, R.STAND_UP, [0, -1, 0]);
     add(`knee-${side}`, 'clip', `Knee link (${S})`, 'frame', `kneeClip${side}`, mountAt(clipR, [0, 0, d.clip.t / 2], P('kneeA')));
     const shinM = mountAt(sag, [0, 0, c], P('kneeB'));
     add(`shin-${side}`, 'shin', `Shin (${S})`, 'frame', `shin${side}`, shinM);
-    add(`shin-sleeve-${side}`, 'shin-sleeve', `Shin armor (${S})`, 'armor', `shin${side}`, shinM, R.STAND_UP, [0, 1, 0]);
+    add(`shin-sleeve-${side}`, perSide('shin-sleeve', side), `Shin armor (${S})`, 'armor', `shin${side}`, shinM, R.STAND_UP, [0, 1, 0]);
     const ankleRot = side === 'L' ? R.I : R.ROT_Y180;
     add(`ankle-${side}`, 'ankle', `Ankle (${S})`, 'frame', `foot${side}`, mountAt(ankleRot, [0, 0, c], P('ankle')));
-    add(`foot-${side}`, 'foot', `Foot (${S})`, 'armor', `foot${side}`, mountAt(R.FOOT, [0, 0, A.footDrop(d)], P('ankle')), R.I, [0, -1, 0]);
+    add(`foot-${side}`, perSide('foot', side), `Foot (${S})`, 'armor', `foot${side}`, mountAt(R.FOOT, [0, 0, A.footDrop(d)], P('ankle')), R.I, [0, -1, 0]);
     // arm
     add(`shoulder-swivel-${side}`, 'swivel', `Shoulder swivel (${S})`, 'frame', `shoulder${side}`, mountAt(sag, [0, 0, c], P('shoulder')));
     const uaM = mountAt(sag, [0, spec.proportions.upperArmLen * s, c], P('armDisc'));
     add(`upper-arm-${side}`, 'upper-arm', `Upper arm (${S})`, 'frame', `upperArm${side}`, uaM);
-    add(`upper-arm-sleeve-${side}`, 'upper-arm-sleeve', `Upper arm armor (${S})`, 'armor', `upperArm${side}`, uaM, R.STAND_UP, [0, -1, 0]);
+    add(`upper-arm-sleeve-${side}`, perSide('upper-arm-sleeve', side), `Upper arm armor (${S})`, 'armor', `upperArm${side}`, uaM, R.STAND_UP, [0, -1, 0]);
     add(`elbow-${side}`, 'clip', `Elbow link (${S})`, 'frame', `elbowClip${side}`, mountAt(clipR, [0, 0, d.clip.t / 2], P('elbowA')));
     const faM = mountAt(sag, [0, 0, c], P('elbowB'));
     add(`forearm-${side}`, 'forearm', `Forearm (${S})`, 'frame', `forearm${side}`, faM);
-    add(`forearm-sleeve-${side}`, 'forearm-sleeve', `Forearm armor (${S})`, 'armor', `forearm${side}`, faM, R.STAND_UP, [0, 1, 0]);
+    add(`forearm-sleeve-${side}`, perSide('forearm-sleeve', side), `Forearm armor (${S})`, 'armor', `forearm${side}`, faM, R.STAND_UP, [0, 1, 0]);
     const handM = mountAt(sag, [0, 0, c], P('wrist'));
     add(`hand-${side}`, `hand-${side}`, `Hand (${S})`, 'frame', `hand${side}`, handM);
     if (side === 'R') {
@@ -165,6 +213,12 @@ export function partList(spec: FigureSpec): PartDef[] {
         .multiply(new Matrix4().makeTranslation(0, 0, -handleZ(d)));
       add('weapon', 'weapon', spec.style.weapon === 'staff' ? 'Staff' : 'Sword', 'accessory', 'handR', handM.clone().multiply(inHand));
     }
+  }
+
+  if (skin) {
+    const st = spec.style.armor;
+    const n = (st.head ? 2 : 0) + (st.chest ? 2 : 0) + (st.abdomen ? 1 : 0) + (st.pelvis ? 1 : 0);
+    for (let i = 0; i < n; i++) add(`dowel-${i}`, 'dowel', 'Armor dowel', 'armor', 'world', new Matrix4(), R.I, null);
   }
 
   // stand
