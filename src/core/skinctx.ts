@@ -1,7 +1,7 @@
 // Glue between an imported character model and the armor builders.
 import { Euler, Matrix4, Vector3 } from 'three';
 import type { Manifold, Mat4, ManifoldToplevel, Mesh } from 'manifold-3d';
-import type { FigureSpec, SkinSettings, Vec3 } from './types.ts';
+import type { FigureSpec, Pose, SkinSettings, Vec3 } from './types.ts';
 import { buildRig, type Rig } from './skeleton.ts';
 import { restToPosed } from './pose.ts';
 import { BUILDERS, partList, type BuildCtx, type PartDef } from './catalog.ts';
@@ -120,7 +120,9 @@ export function createSkinContext(wasm: ManifoldToplevel, spec: FigureSpec, d: D
       if (!solid || !frameKeys.has(k)) continue;
       const bb = solid.boundingBox();
       const contours = solid.project().toPolygons().filter((c) => area(c) > 0);
-      const pocket = extrude(poly(contours).offset(d.armor.clr, 'Round', 2, 16), bb.min[2] - d.armor.clr, bb.max[2] + d.armor.clr);
+      // with frame cover on, neighbours' frames carry a wall of standard armor: stay clear of it
+      const keep = d.armor.clr + (sk.cover ? 1.2 * d.s + sk.gap : 0);
+      const pocket = extrude(poly(contours).offset(keep, 'Round', 2, 16), bb.min[2] - keep, bb.max[2] + keep);
       localPockets.set(k, copyMesh(pocket.getMesh()));
     }
   }
@@ -136,6 +138,43 @@ export function createSkinContext(wasm: ManifoldToplevel, spec: FigureSpec, d: D
   const instance = (piece: string): PartDef | undefined => {
     const id = piece.match(/-(front|back)$/) ? piece : ({ head: 'head-front', chest: 'chest-front', abdomen: 'abdomen-front', pelvis: 'pelvis-front' } as Record<string, string>)[piece] ?? piece;
     return parts.find((p) => p.id === id);
+  };
+  // movement carving: the chest and pelvis lose whatever the upper arms and thighs sweep
+  // through over the usual range of their joints (sampled), plus the gap
+  const sweeps = new Map<string, Manifold | null>();
+  type Sweep = { piece: string; node: string; poses: Pose[] };
+  const grid = (joint: string, xs: number[], zs: number[]): Pose[] => {
+    const sgn = joint.endsWith('L') ? 1 : -1;
+    return xs.flatMap((x) => zs.map((z) => ({ [joint]: [x, 0, sgn * z] as Vec3 })));
+  };
+  const SWEEP: Record<string, Sweep[]> = {};
+  for (const S of ['L', 'R'] as const) {
+    // arm swings, plus twists of the upper arm (shoulder pads are rarely round)
+    const twists = [-80, -40, 40, 80].flatMap((tw) => grid(`shoulder${S}`, [-30, 0, 20], [20, 45]).map((p) => ({ ...p, [`upperArm${S}`]: [0, tw, 0] as Vec3 })));
+    const arm: Sweep = { piece: `upper-arm-sleeve-${S}`, node: `upperArm${S}`, poses: [...grid(`shoulder${S}`, [-90, -60, -30, 0, 20, 40], [0, 20, 40, 60, 90]), ...twists] };
+    const thigh: Sweep = { piece: `thigh-sleeve-${S}`, node: `thigh${S}`, poses: grid(`hip${S}`, [-110, -75, -40, 0, 30], [0, 25]) };
+    const shin: Sweep = { piece: `shin-sleeve-${S}`, node: `shin${S}`, poses: [30, 60, 90, 120, 160].map((a) => ({ [`kneeClip${S}`]: [a / 2, 0, 0] as Vec3, [`shin${S}`]: [a / 2, 0, 0] as Vec3 })) };
+    const foot: Sweep = { piece: `foot-${S}`, node: `foot${S}`, poses: [-35, -15, 0, 15, 35].flatMap((x) => [-15, 0, 15].map((z) => ({ [`foot${S}`]: [x, 0, z] as Vec3 }))) };
+    const fore: Sweep = { piece: `forearm-sleeve-${S}`, node: `forearm${S}`, poses: [30, 60, 90, 120, 160].map((a) => ({ [`elbowClip${S}`]: [-a / 2, 0, 0] as Vec3, [`forearm${S}`]: [-a / 2, 0, 0] as Vec3 })) };
+    for (const [piece, sw] of [['chest', arm], ['abdomen', arm], ['pelvis', thigh], [`thigh-sleeve-${S}`, shin], [`shin-sleeve-${S}`, foot], [`upper-arm-sleeve-${S}`, fore]] as const) (SWEEP[piece] ??= []).push(sw);
+  }
+  const sweepOf = (sw: Sweep): Manifold | null => {
+    if (sweeps.has(sw.piece)) return sweeps.get(sw.piece)!;
+    const ts = performance.now();
+    const k = owners.findIndex((o) => o.piece === sw.piece);
+    const box = k >= 0 ? boxes[k] : null;
+    // grown by the gap, so the carved piece keeps a gap's clearance from the moving one
+    // (coarser than the pieces: a sweep only has to clear, not to look good)
+    const region = box ? regionSolid(field!, owners, k, box, -sk.gap, Math.max(2.5 * edge, 1.6)) : null;
+    let out: Manifold | null = null;
+    if (region) {
+      const back = posed[sw.node].clone().invert();
+      const copies = sw.poses.map((p) => region.transform(restToPosed(rig, { ...sk.bindPose, ...p })[sw.node].clone().multiply(back).elements as unknown as Mat4));
+      out = wasm.Manifold.union(copies).simplify(0.3);
+    }
+    sweeps.set(sw.piece, out);
+    if ((globalThis as { process?: { env: Record<string, string> } }).process?.env.SKIN_DEBUG) console.log(`sweep ${sw.piece}: ${sw.poses.length} poses, ${(performance.now() - ts).toFixed(0)} ms, ${out?.numTri() ?? 0} tris`);
+    return out;
   };
   const ms = performance.now() - t0;
   return {
@@ -154,6 +193,11 @@ export function createSkinContext(wasm: ManifoldToplevel, spec: FigureSpec, d: D
         if (pk.box.max[0] < rb.min[0] || pk.box.min[0] > rb.max[0] || pk.box.max[1] < rb.min[1] || pk.box.min[1] > rb.max[1] || pk.box.max[2] < rb.min[2] || pk.box.min[2] > rb.max[2]) continue;
         region = region.subtract(wasm.Manifold.ofMesh(pk.mesh));
       }
+      if (sk.motion) for (const sw of SWEEP[piece] ?? []) {
+        const cut = sweepOf(sw);
+        if (cut) region = region.subtract(cut);
+      }
+      if (region.isEmpty()) return null;
       const toDesign = posed[inst.node].clone().multiply(inst.mount).invert();
       return region.transform(toDesign.elements as unknown as Mat4);
     },

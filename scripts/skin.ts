@@ -1,6 +1,8 @@
 // Headless character-skin builder.
-//   node scripts/skin.ts <model.stl> <out-dir> [spec.json]
-// spec.json may hold any FigureSpec fields (proportions, style, skin.transform, skin.bindPose...).
+//   node scripts/skin.ts <model.stl> <out-dir> [spec.json] [--height=140]
+// Without spec.json the model is stood up, scaled to --height mm (default 140) and the skeleton is
+// fitted to it automatically, as in the web app. spec.json may hold any FigureSpec fields
+// (proportions, style, skin.transform, skin.bindPose...) to skip or override that.
 // Writes print-ready STLs per part, assembled previews (frame.stl / armor.stl) and a report.
 import Module from 'manifold-3d';
 import type { Manifold, Mat4 } from 'manifold-3d';
@@ -14,35 +16,12 @@ import { prepareForPrint } from '../src/core/layout.ts';
 import { meshOf } from '../src/core/geometry/mesh.ts';
 import { restToPosed } from '../src/core/pose.ts';
 import { buildRig } from '../src/core/skeleton.ts';
-import { createSkinContext, modelId } from '../src/core/skinctx.ts';
+import { createSkinContext, modelId, modelMatrix } from '../src/core/skinctx.ts';
+import { fitRig } from '../src/core/rigfit.ts';
+import { autoFit } from '../src/app/models.ts';
+import { restGround } from '../src/core/catalog.ts';
+import { readStl } from './stl.ts';
 import type { FigureSpec } from '../src/core/types.ts';
-
-export function readStl(buf: Buffer): { positions: Float32Array; indices: Uint32Array } {
-  const tris: number[] = [];
-  const isAscii = buf.subarray(0, 5).toString() === 'solid' && buf.includes(Buffer.from('facet'));
-  if (isAscii) {
-    const re = /vertex\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s+([-+\d.eE]+)/g;
-    const txt = buf.toString();
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(txt))) tris.push(+m[1], +m[2], +m[3]);
-  } else {
-    const n = buf.readUInt32LE(80);
-    for (let i = 0; i < n; i++) {
-      const o = 84 + i * 50 + 12;
-      for (let k = 0; k < 9; k++) tris.push(buf.readFloatLE(o + k * 4));
-    }
-  }
-  const map = new Map<string, number>();
-  const pos: number[] = [];
-  const idx = new Uint32Array(tris.length / 3);
-  for (let i = 0; i < tris.length; i += 3) {
-    const key = `${Math.round(tris[i] * 1e4)},${Math.round(tris[i + 1] * 1e4)},${Math.round(tris[i + 2] * 1e4)}`;
-    let v = map.get(key);
-    if (v === undefined) { v = pos.length / 3; map.set(key, v); pos.push(tris[i], tris[i + 1], tris[i + 2]); }
-    idx[i / 3] = v;
-  }
-  return { positions: new Float32Array(pos), indices: idx };
-}
 
 function merge<T>(base: T, over: unknown): T {
   if (!over || typeof over !== 'object' || Array.isArray(over)) return (over as T) ?? base;
@@ -68,7 +47,7 @@ function asciiStl(ms: Manifold[]): string {
   return out.join('\n');
 }
 
-const [modelPath, outDir, specPath] = process.argv.slice(2);
+const [modelPath, outDir, specPath] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 if (!modelPath || !outDir) {
   console.log('usage: node scripts/skin.ts <model.stl> <out-dir> [spec.json]');
   process.exit(1);
@@ -87,6 +66,25 @@ if (specPath) spec = merge(spec, JSON.parse(readFileSync(specPath, 'utf8')));
 spec.skin.enabled = true;
 spec.skin.modelId = model.id;
 spec = sanitizeSpec(spec);
+if (!specPath) {
+  // automatic: place like the app's Auto-fit, then fit the skeleton
+  const height = Number(process.argv.find((a) => a.startsWith('--height='))?.slice(9) ?? 140);
+  spec.skin.transform = autoFit(model, height, -restGround(spec));
+  const m = modelMatrix(spec.skin.transform).elements, world = new Float32Array(positions.length);
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+    for (let k = 0; k < 3; k++) world[i + k] = m[k] * x + m[4 + k] * y + m[8 + k] * z + m[12 + k];
+  }
+  const fit = fitRig(spec, world, indices);
+  console.log(`skeleton fit: ${fit.ok ? 'ok' : 'FAILED'}${fit.notes.length ? ' (' + fit.notes.join('; ') + ')' : ''}`);
+  if (!fit.ok) process.exit(1);
+  spec.proportions = fit.proportions;
+  const o = spec.skin.transform.offset;
+  spec.skin.transform.offset = [o[0] - fit.pelvis[0], o[1] - fit.pelvis[1], o[2] - fit.pelvis[2]];
+  spec.skin.bindPose = fit.pose;
+  spec = sanitizeSpec(spec);
+  writeFileSync(`${outDir}/design.dummo.json`, JSON.stringify({ app: 'dummo', v: 1, spec, pose: fit.pose }, null, 1));
+}
 console.log(`model: ${positions.length / 3} verts, ${indices.length / 3} tris  (${(performance.now() - t0).toFixed(0)} ms)`);
 
 const d = jointDims(spec);

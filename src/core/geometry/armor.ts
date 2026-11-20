@@ -41,6 +41,7 @@ function sweepCut(d: Dims, f: SocketFeature): Manifold {
 export type ClamshellOpts = {
   hz: number;
   outer?: Manifold | null; // character skin: replaces the faceted shell
+  cover?: number;          // skin: wall (mm) kept around the frame where the model is thinner
 
   emblem?: { kind: FigureSpec['style']['emblem']; x: number; y: number; size: number };
   port?: { x: number; y: number; half: number };
@@ -56,6 +57,10 @@ export function clamshell(d: Dims, fb: FrameBuild, slices: Slice[], opts: Clamsh
   // pocket = frame silhouette with its holes filled (pegs and ports pass through it)
   const outerContours = fb.solid.project().toPolygons().filter((pg) => signedArea(pg) > 0);
   const outline = poly(outerContours).offset(clr, 'Round', 2, 24);
+  // a thin model still has to hide the frame: keep a wall around it
+  // (clipped to the standard shell, whose outline is made to clear the neighbouring pieces)
+  const coverM = skin && opts.cover ? extrude(outline.offset(opts.cover, 'Round', 2, 24), zMin - clr - opts.cover, zMax + clr + opts.cover).intersect(octoLoft(slices, zc)) : null;
+  if (coverM) body = body.add(coverM);
   body = body.subtract(extrude(outline, zMin - clr, zMax + clr));
   for (const f of fb.features) {
     if (f.kind === 'ball') {
@@ -66,6 +71,8 @@ export function clamshell(d: Dims, fb: FrameBuild, slices: Slice[], opts: Clamsh
     body = body.subtract(sphere(d.ball.r + 0.3 * s, f.x, f.y, zc));
     // skins trade some range of motion for keeping more of the character's shape
     if (f.sweep) body = body.subtract(sweepCut(d, skin ? { ...f, sweep: [f.sweep[0] * 0.55, f.sweep[1] * 0.55] } : f));
+    // the cover wall is standard armor, so it gets the standard (full) swing clearance
+    if (f.sweep && coverM) body = body.subtract(sweepCut(d, f).intersect(coverM));
     if (f.faceStem) body = body.subtract(cylZ(d.armor.faceStemR, -50, 50, f.x, f.y));
     if (f.cutPlane) {
       const a = rad(f.mouth), ax = Math.cos(a), ay = Math.sin(a);
@@ -115,6 +122,11 @@ function emblemCut(e: NonNullable<ClamshellOpts['emblem']>, zFront: number, s: n
 
 // ---------- torso + head ----------
 
+/** Skin wall kept around the frame where the model is too thin (0 = off). */
+function cover(spec: FigureSpec, s: number): number {
+  return spec.skin.cover ? 1.2 * s : 0;
+}
+
 function facetCh(spec: FigureSpec, base: number, s: number): number {
   return (base * (0.35 + 1.1 * spec.style.facet)) * s;
 }
@@ -136,7 +148,7 @@ export function headShell(d: Dims, spec: FigureSpec, fb: FrameBuild, outer?: Man
     y: yb + t * H, hx: w * hw, hz, ch: Math.min(w * hw, hz) * c * f,
   }));
   const groove = spec.style.headShape === 'visor' ? { y: yb + 0.56 * H, halfW: hw * 0.8, h: 1.5 * s } : undefined;
-  return clamshell(d, fb, slices, { hz, groove, outer });
+  return clamshell(d, fb, slices, { hz, groove, outer, cover: cover(spec, s) });
 }
 
 export function chestShell(d: Dims, spec: FigureSpec, fb: FrameBuild, outer?: Manifold | null): Shell {
@@ -155,7 +167,7 @@ export function chestShell(d: Dims, spec: FigureSpec, fb: FrameBuild, outer?: Ma
   ];
   const emblem = { kind: st.emblem, x: 0, y: Math.max(Ys - 4.2 * s, 6.5 * s), size: 2.6 * s * Math.min(w, 1.15) };
   const port = st.backPort ? { x: 0, y: Ys, half: 1.6 * s + 0.15 } : undefined;
-  return clamshell(d, fb, slices, { hz, emblem, port, outer });
+  return clamshell(d, fb, slices, { hz, emblem, port, outer, cover: cover(spec, s) });
 }
 
 export function abdomenShell(d: Dims, spec: FigureSpec, fb: FrameBuild, outer?: Manifold | null): Shell | null {
@@ -169,7 +181,7 @@ export function abdomenShell(d: Dims, spec: FigureSpec, fb: FrameBuild, outer?: 
     { y: (top + bottom) / 2, hx: 5.1 * s * w, hz, ch },
     { y: top, hx: 4.7 * s * w, hz, ch },
   ];
-  return clamshell(d, fb, slices, { hz, outer });
+  return clamshell(d, fb, slices, { hz, outer, cover: cover(spec, s) });
 }
 
 export function pelvisShell(d: Dims, spec: FigureSpec, fb: FrameBuild, outer?: Manifold | null): Shell | null {
@@ -183,7 +195,7 @@ export function pelvisShell(d: Dims, spec: FigureSpec, fb: FrameBuild, outer?: M
     { y: -1.0 * s, hx: 6.1 * s, hz, ch },
     { y: Math.max(top, 0), hx: 5.4 * s, hz, ch },
   ];
-  return clamshell(d, fb, slices, { hz, outer });
+  return clamshell(d, fb, slices, { hz, outer, cover: cover(spec, s) });
 }
 
 // ---------- limb sleeves ----------
@@ -209,11 +221,14 @@ export function upperSleeve(d: Dims, spec: FigureSpec, L: number, factor = 1, ou
   const top = L + d.swivel.headTop, pocketBot = L - 3.95 * s, bottom = 5.5 * s;
   if (top - bottom < 4 * s) return null;
   const ch = facetCh(spec, 1.4, s);
-  const slices: Slice[] = [
+  const sl = (b: number): Slice[] => [
     { y: bottom, hx: Math.max(3.9 * s * b, 3.8 * s), hz: Math.max(3.9 * s * b, 3.8 * s), ch: ch * 0.8 },
     { y: Math.max(bottom + 1 * s, pocketBot - 0.5 * s), hx: Math.max(5.0 * s * b, 5.4 * s), hz: Math.max(4.4 * s * b, 4.3 * s), ch },
     { y: top, hx: Math.max(5.4 * s * b, 5.4 * s), hz: Math.max(4.5 * s * b, 4.4 * s), ch },
   ];
+  const slices = sl(b);
+  // thin limbs: the leanest standard sleeve fills in where the model can't hide the frame
+  if (outer && spec.skin.cover) outer = outer.add(octoLoft(sl(0), c));
   const hw = d.hinge.barHW + clr;
   let m: Manifold;
   if (outer) {
@@ -246,14 +261,17 @@ export function lowerSleeve(d: Dims, spec: FigureSpec, L: number, factor = 1, ou
   const s = d.s, clr = d.armor.clr, T = d.T, c = d.c, b = spec.style.bulk * factor;
   const top = -5.5 * s, bottom = -L + 5.25 * s;
   const len = top - bottom;
-  if (len < 3 * s) return null;
+  // a skin cuff takes its shape from the model, so even a short forearm or shin gets one
+  if (len < (outer ? 0.5 : 3) * s) return null;
   const ch = facetCh(spec, 1.3, s);
   const mn = 3.75 * s;
-  const slices: Slice[] = [
+  const sl = (b: number): Slice[] => [
     { y: top, hx: Math.max(4.1 * s * b, mn), hz: Math.max(4.0 * s * b, mn), ch },
     { y: top - 0.35 * len, hx: Math.max(4.6 * s * b, mn), hz: Math.max(4.3 * s * b, mn), ch },
     { y: bottom, hx: Math.max(3.8 * s * b, mn), hz: Math.max(3.75 * s * b, mn), ch: ch * 0.85 },
   ];
+  const slices = sl(b);
+  if (outer && spec.skin.cover && len >= 3 * s) outer = outer.add(octoLoft(sl(0), c));
   const hw = d.hinge.barHW + clr;
   const big = 80 * s;
   let shell: Manifold;
@@ -285,7 +303,8 @@ export function foot(d: Dims, spec: FigureSpec, outer?: Manifold | null): Manifo
     { y: 5 * s * f, hx: 4.3 * s * f, hz: 3.6 * s, ch },
     { y: 10.5 * s * f, hx: 3.5 * s * f, hz: 2.3 * s, ch: ch * 0.8 },
   ];
-  let m = outer ?? keepSide(octoLoft(slices, 0), [0, 0, 1], [0, 0, 0]);
+  const stock = () => keepSide(octoLoft(slices, 0), [0, 0, 1], [0, 0, 0]);
+  let m = outer ? (spec.skin.cover ? outer.add(stock()) : outer) : stock();
   if (outer) {
     // keep the ankle ball and the shin's swing clear
     const az = footDrop(d), r0 = 2.2 * s, L = 40 * s;

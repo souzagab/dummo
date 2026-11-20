@@ -440,15 +440,36 @@ async function loadModel(f: File): Promise<void> {
     const m = await parseModel(f);
     setModel(m);
     void storeModel(m);
-    const sp = structuredClone(store.state.spec);
-    sp.skin = { ...sp.skin, modelId: m.id, modelName: m.name, enabled: false, transform: fitTransform(m), bindPose: {} };
-    store.update({ spec: sp, view: { ...store.state.view, tab: 'skin', ghost: { ...store.state.view.ghost, show: true } } }, true);
-    setStatus(`Loaded ${m.name}`, 1);
-    toast('Model loaded. Line it up, pose the figure to match, then bind.');
+    store.update({ view: { ...store.state.view, tab: 'skin' } });
+    await fitModel(m, false);
   } catch (e) {
     setStatus('Could not read that model', 1);
     toast(String((e as Error).message ?? e), 'error');
   }
+}
+
+/**
+ * Place the model, fit the skeleton to it (proportions, limb angles, position) and bind.
+ * If the fit fails, the model is left placed and the user lines things up by hand.
+ */
+async function fitModel(m: SkinModel, keepRot: boolean): Promise<void> {
+  const sp = structuredClone(store.state.spec);
+  sp.skin = { ...sp.skin, modelId: m.id, modelName: m.name, enabled: false, transform: fitTransform(m, keepRot), bindPose: {} };
+  setStatus('Fitting the skeleton to the model…', 0.5);
+  const { fit, error } = await preview.fit(sp);
+  if (!fit || !fit.ok) {
+    store.update({ spec: sp, view: { ...store.state.view, ghost: { ...store.state.view.ghost, show: true } } }, true);
+    setStatus('Line the model up by hand', 1);
+    toast(`Could not fit the skeleton (${error ?? fit?.notes.at(-1) ?? 'unknown shape'}). Pose the figure like the model, adjust proportions, then bind.`, 'error');
+    return;
+  }
+  sp.proportions = fit.proportions;
+  const o = sp.skin.transform.offset;
+  sp.skin.transform = { ...sp.skin.transform, offset: [o[0] - fit.pelvis[0], o[1] - fit.pelvis[1], o[2] - fit.pelvis[2]] };
+  sp.skin.bindPose = structuredClone(fit.pose);
+  sp.skin.enabled = true;
+  store.update({ spec: sp, pose: structuredClone(fit.pose), view: { ...store.state.view, ghost: { ...store.state.view.ghost, show: false } } }, true);
+  toast('Skeleton fitted and bound. If a joint is off, fix it in Design or Pose, then press Bind again.');
 }
 
 function removeModel(): void {
@@ -492,12 +513,7 @@ buildPanel(panel, {
   actions: {
     loadModel: (f) => void loadModel(f),
     removeModel,
-    autoFit: () => {
-      if (!model) return;
-      const sp = structuredClone(store.state.spec);
-      sp.skin.transform = fitTransform(model, true);
-      store.update({ spec: sp }, true);
-    },
+    autoFit: () => { if (model) void fitModel(model, true); },
     bindPose,
     exportGroup: (g) => void exportGroup(g),
     exportStl: () => void exportStl(),

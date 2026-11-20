@@ -74,7 +74,7 @@ export function defaultSkin(): SkinSettings {
   return {
     enabled: false, modelId: '', modelName: '',
     transform: { scale: 1, rot: [0, 0, 0], offset: [0, 0, 0] },
-    bindPose: {}, detail: 0.45, close: 2.5, gap: 0.6,
+    bindPose: {}, detail: 0.45, close: 2.5, gap: 0.6, motion: true, cover: true,
   };
 }
 
@@ -161,6 +161,8 @@ export function sanitizeSpec(spec: FigureSpec): FigureSpec {
   sk.detail = clamp(Number(sk.detail) || 0.6, 0.3, 1.5);
   sk.close = clamp(Number(sk.close) || 0, 0, 8);
   sk.gap = clamp(Number(sk.gap) || 0.6, 0.2, 3);
+  sk.motion = sk.motion !== false;
+  sk.cover = sk.cover !== false;
   sk.transform.scale = clamp(Number(sk.transform.scale) || 1, 1e-4, 1e4);
   if (!sk.modelId) sk.enabled = false;
   const t = s.tolerances;

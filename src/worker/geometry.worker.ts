@@ -3,7 +3,8 @@ import Module from 'manifold-3d';
 import wasmUrl from 'manifold-3d/manifold.wasm?url';
 import type { Manifold } from 'manifold-3d';
 import { buildersFor, CALIBRATION, skinActive, type BuildCtx } from '../core/catalog.ts';
-import { createSkinContext, type SkinModel } from '../core/skinctx.ts';
+import { createSkinContext, modelMatrix, type SkinModel } from '../core/skinctx.ts';
+import { fitRig } from '../core/rigfit.ts';
 import { collect, initGeo, setSegments } from '../core/geometry/geo.ts';
 import { jointDims } from '../core/geometry/kit.ts';
 import { meshOf } from '../core/geometry/mesh.ts';
@@ -96,6 +97,24 @@ self.onmessage = (e: MessageEvent<WorkerIn>) => {
   const msg = e.data;
   if (msg.type === 'model') {
     model = msg.model;
+    return;
+  }
+  if (msg.type === 'fit') {
+    if (!model) { post({ type: 'fit', id: msg.id, fit: null, error: 'no model loaded' }); return; }
+    try {
+      const m = modelMatrix(msg.spec.skin.transform).elements, src = model.positions;
+      const pos = new Float32Array(src.length);
+      for (let i = 0; i < src.length; i += 3) {
+        const x = src[i], y = src[i + 1], z = src[i + 2];
+        pos[i] = m[0] * x + m[4] * y + m[8] * z + m[12];
+        pos[i + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+        pos[i + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+      }
+      const r = fitRig(msg.spec, pos, model.indices);
+      post({ type: 'fit', id: msg.id, fit: { ok: r.ok, proportions: r.proportions, pose: r.pose, pelvis: r.pelvis, notes: r.notes } });
+    } catch (err) {
+      post({ type: 'fit', id: msg.id, fit: null, error: String((err as Error)?.message ?? err) });
+    }
     return;
   }
   if (msg.type === 'build') {

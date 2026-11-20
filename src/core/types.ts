@@ -67,6 +67,8 @@ export type SkinSettings = {
   detail: number;     // voxel size, mm
   close: number;      // seal openings narrower than ~2x this, mm
   gap: number;        // gap between neighbouring skin pieces, mm
+  motion: boolean;    // carve the torso and pelvis where arms and legs swing through
+  cover: boolean;     // keep a wall around the frame where the model is too thin to hide it
 };
 
 export type FigureSpec = {

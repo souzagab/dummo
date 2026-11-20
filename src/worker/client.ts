@@ -1,7 +1,7 @@
 // Main-thread side of the geometry worker. Every request gets an id; a newer request
 // supersedes older ones (the worker abandons them between part groups).
 import type { FigureSpec, MeshData } from '../core/types.ts';
-import type { WorkerIn, WorkerOut } from './protocol.ts';
+import type { FitResult, WorkerIn, WorkerOut } from './protocol.ts';
 import type { SkinModel } from '../core/skinctx.ts';
 
 type Pending = {
@@ -15,6 +15,7 @@ export class GeometryClient {
   private worker: Worker;
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  private fits = new Map<number, (r: { fit: FitResult | null; error?: string }) => void>();
   onError: (msg: string) => void = (m) => console.error(m);
   onSkin: (state: 'building' | 'ready' | 'missing', ms?: number) => void = () => {};
 
@@ -31,6 +32,16 @@ export class GeometryClient {
     this.worker.postMessage(msg, m ? [m.positions.buffer, m.indices.buffer] : []);
   }
 
+  /** Fit the skeleton to the loaded model (placed by spec.skin.transform). */
+  fit(spec: FigureSpec): Promise<{ fit: FitResult | null; error?: string }> {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      this.fits.set(id, resolve);
+      const msg: WorkerIn = { type: 'fit', id, spec };
+      this.worker.postMessage(msg);
+    });
+  }
+
   build(spec: FigureSpec, segments: number, opts: { keys?: string[]; calibration?: boolean; skinEdge?: number; onPart?: Pending['onPart'] } = {}) {
     const id = this.nextId++;
     // older requests will never complete: settle them now
@@ -43,6 +54,7 @@ export class GeometryClient {
   }
 
   private handle(msg: WorkerOut) {
+    if (msg.type === 'fit') { this.fits.get(msg.id)?.({ fit: msg.fit, error: msg.error }); this.fits.delete(msg.id); return; }
     const p = this.pending.get(msg.id);
     if (msg.type === 'error') { this.onError(msg.message); return; }
     if (msg.type === 'skin') { if (this.pending.has(msg.id)) this.onSkin(msg.state, msg.ms); return; }

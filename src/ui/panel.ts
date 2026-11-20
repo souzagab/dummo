@@ -222,7 +222,7 @@ function skinTab(ctx: PanelCtx): Synced {
 
   const scale = slider({
     label: 'Size', min: -3, max: 3, step: 0.002, value: Math.log10(store.state.spec.skin.transform.scale),
-    hint: 'Model scale. Auto-fit sets this from the figure height.',
+    hint: 'Model scale. Auto-fit sets this from the figure height and refits the skeleton.',
     format: (v) => { const x = 10 ** v; return `×${x >= 100 ? x.toFixed(0) : x >= 1 ? x.toFixed(3) : x.toPrecision(3)}`; },
     onInput: (v) => setSkin((sk) => { sk.transform.scale = 10 ** v; }), onCommit: () => store.commit(),
   });
@@ -271,6 +271,18 @@ function skinTab(ctx: PanelCtx): Synced {
     onInput: (v) => setSkin((sk) => { sk.gap = v; }), onCommit: () => store.commit(),
   });
   syncs.push((s) => gap.set(s.spec.skin.gap));
+  const motion = toggle({
+    label: 'Carve for movement', value: store.state.spec.skin.motion,
+    hint: 'Hollow the chest and pelvis where the arms and legs swing, so the joints reach their full range. Off keeps more of the model\'s shape.',
+    onChange: (v) => { setSkin((sk) => { sk.motion = v; }); store.commit(); },
+  });
+  syncs.push((s) => motion.set(s.spec.skin.motion));
+  const coverT = toggle({
+    label: 'Cover thin spots', value: store.state.spec.skin.cover,
+    hint: 'Where the model is thinner than the frame (slim arms, narrow waists), fill in with standard armor so no joint is left bare.',
+    onChange: (v) => { setSkin((sk) => { sk.cover = v; }); store.commit(); },
+  });
+  syncs.push((s) => coverT.set(s.spec.skin.cover));
 
   const loadedOnly = h('div', { class: 'tab-page' },
     section('Line it up', h('div', { class: 'row wrap' },
@@ -278,12 +290,9 @@ function skinTab(ctx: PanelCtx): Synced {
       h('button', { type: 'button', class: 'btn ghost', onclick: () => actions.removeModel() }, icon('close', 15), 'Remove')),
     deg, scale.el, ...offs, ghost.el, opacity.el),
     section('Skin',
-      h('ol', { class: 'steps' },
-        h('li', {}, 'Pose the figure the way the model stands (', h('b', {}, 'Pose'), ' tab).'),
-        h('li', {}, 'Adjust proportions in ', h('b', {}, 'Design'), ' until every joint sits inside the model.'),
-        h('li', {}, 'Bind, then switch the armor on.')),
+      h('p', { class: 'muted small' }, 'Loading a model fits the skeleton and binds it. To correct a joint: show the model, fix it in ', h('b', {}, 'Design'), ' or ', h('b', {}, 'Pose'), ', then bind again.'),
       h('button', { type: 'button', class: 'btn wide', onclick: () => actions.bindPose() }, icon('figure', 16), 'Bind to current pose'),
-      bindInfo, enabled.el, detail.el, close.el, gap.el,
+      bindInfo, enabled.el, detail.el, close.el, gap.el, motion.el, coverT.el,
       h('p', { class: 'muted small' }, 'Skin pieces split around the frame like the regular armor. Halves are joined with small printed dowels. Organic shapes usually need supports.')),
   );
   syncs.push(() => {
@@ -581,11 +590,11 @@ const GUIDE_HTML = `
 <li><b>Stand.</b> Press the post into the base and plug its peg into the back port.</li>
 </ol></section>
 <section class="card"><h3>Character skins</h3>
-<p>Any humanoid model can become the armor: a sculpt, a game model, a statue. Load it in the <b>Skin</b> tab (STL, OBJ, GLB/glTF, 3MF or PLY). Then:</p>
+<p>Any humanoid model can become the armor: a sculpt, a game model, a statue. Load it in the <b>Skin</b> tab (STL, OBJ, GLB/glTF, 3MF or PLY), standing upright and facing front.</p>
 <ol>
-<li><b>Auto-fit</b> scales the model to the figure and stands it on the ground. Use the turn buttons if it lies down or faces the wrong way.</li>
-<li>Pose the figure the way the model stands (T-pose, A-pose or arms down) and adjust proportions until every joint sits inside the model.</li>
-<li><b>Bind</b>. The model is solidified, holes narrower than about twice <i>Seal openings</i> are filled, and each bone takes the nearest part of the body.</li>
+<li>dummo stands the model on the ground, finds its head, hands and feet, and fits the skeleton: proportions, arm and leg angles (T-pose, A-pose or arms down) and position. Then it binds.</li>
+<li>Binding solidifies the model (hollow shells and holes narrower than about twice <i>Seal openings</i> are filled) and gives each bone the nearest part of the body.</li>
+<li>If a joint is off, show the model, fix it in <b>Design</b> or <b>Pose</b> and press <b>Bind to current pose</b>. If the model lies down or faces the wrong way, use the turn buttons, then <b>Auto-fit</b>.</li>
 </ol>
 <p>Torso and head pieces split around the frame and are joined by printed dowels. Arms and legs become slide-on sleeves: shoulder and hip pieces wrap the joint, and knees and elbows get side plates. Organic shapes usually need supports.</p>
 </section>

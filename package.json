@@ -7,7 +7,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "check": "node scripts/check.ts"
+    "check": "node scripts/check.ts",
+    "fitcheck": "node scripts/fitcheck.ts"
   },
   "type": "module",
   "dependencies": {

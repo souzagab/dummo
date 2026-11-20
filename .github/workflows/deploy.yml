@@ -26,6 +26,7 @@ jobs:
       - run: npm ci
       - name: Geometry checks (validity + collisions for every preset, two resolutions)
         run: npm run check -- --fast && npm run check
+      - run: FIT_PRESETS=Standard,Chibi,Brute FIT_LIMIT=7 npm run fitcheck
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

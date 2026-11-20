@@ -5,6 +5,8 @@ import Module from 'manifold-3d';
 import type { Manifold, Mat4 } from 'manifold-3d';
 import { BUILDERS, buildersFor, CALIBRATION, partList, type BuildCtx } from '../src/core/catalog.ts';
 import { createSkinContext, modelId } from '../src/core/skinctx.ts';
+import { fitRig } from '../src/core/rigfit.ts';
+import { mannequin } from './mannequin.ts';
 import { isWatertight, meshOf } from '../src/core/geometry/mesh.ts';
 import { applyPreset, defaultSpec, PRESETS, sanitizeSpec } from '../src/core/defaults.ts';
 import { collect, initGeo, setSegments } from '../src/core/geometry/geo.ts';
@@ -116,6 +118,24 @@ for (const scale of [0.7, 1.6]) {
   const ctx = createSkinContext(wasm, spec, jointDims(spec), { id: spec.skin.modelId, name: 'self', positions, indices }, 0.8);
   collect();
   checkSpec('skin', spec, ctx);
+}
+{
+  // generic models end to end, as the app does it: fit the skeleton, then skin and build
+  const cases: [string, string, number][] = [['Standard', 'A-pose', 1.05], ['Heroic', 'T-pose', 1.2], ['Slim', 'Rest', 1]];
+  for (const [preset, poseName, girth] of process.argv.includes('--fast') ? cases.slice(0, 1) : cases) {
+    const truth = sanitizeSpec(applyPreset(defaultSpec(), preset));
+    const body = mannequin(truth, POSES[poseName], girth, 1.1);
+    const fit = fitRig(sanitizeSpec(defaultSpec()), body.positions, body.indices);
+    if (!fit.ok) { fail(`auto-fit ${preset} ${poseName}: ${fit.notes.join('; ')}`); continue; }
+    // the app moves the model so its pelvis lands on the rig's origin
+    const positions = body.positions.slice();
+    for (let i = 0; i < positions.length; i += 3) for (let k = 0; k < 3; k++) positions[i + k] -= fit.pelvis[k];
+    const base = sanitizeSpec(defaultSpec());
+    const spec = sanitizeSpec({ ...base, proportions: fit.proportions, skin: { ...base.skin, enabled: true, modelId: modelId(positions, body.indices), detail: 0.6, bindPose: fit.pose } });
+    const ctx = createSkinContext(wasm, spec, jointDims(spec), { id: spec.skin.modelId, name: 'mannequin', positions, indices: body.indices }, 0.8);
+    collect();
+    checkSpec(`fit ${preset.slice(0, 4)} ${poseName}`, spec, ctx);
+  }
 }
 {
   const d = jointDims(defaultSpec());

@@ -16,7 +16,8 @@ part comes out already oriented for printing, with snap-fit joints and no suppor
 - **Armor styling**: head shapes (egg, round, block, visor), head size, chest width, limb bulk,
   facet amount, an engraved chest emblem, and an on/off switch for each armor piece.
 - **Character skins**: load any humanoid model (STL, OBJ, GLB/glTF, 3MF, PLY) and turn it into
-  posable, printable armor on the dummo frame. Open or messy meshes are solidified automatically.
+  posable, printable armor on the dummo frame. The skeleton fits itself to the model (proportions,
+  arm and leg angles, placement); open, hollow or messy meshes are solidified automatically.
 - **Hands and gear**: fist, open or grip hands. Grip hands can hold a printable sword or staff.
 - **Posing**: 25 joints with real joint limits, pose presets (T-pose, Hero, Walk, Run, Kick…),
   mirroring, random poses. Click any part to grab its joint. The figure stays on the ground
@@ -54,20 +55,39 @@ printer error doesn't grow with the model.
 
 ### Character skins
 
-An imported model is voxelized and sealed: gaps narrower than a set radius close, so open shells
+**Fitting the skeleton.** The model is stood up and scaled, then voxelized. Shortest paths through
+the solid from the belly (weighted to stay on the limbs' centre lines and to cross small gaps
+between separate pieces) end at the head, hands and feet. A first guess comes from those paths
+and cross-sections. An optimizer then adjusts the proportions, limb angles and position until the
+bones lie inside the model, reach its hands and run along its medial axis. It handles T-pose,
+A-pose and arms-down models, fused sculpts and statues made of separate pieces.
+`scripts/fitcheck.ts` checks it on 70 generated bodies (thin to chubby, big heads, five
+proportion presets, three poses); joints land within about 6 mm.
+
+**Building the armor.** An imported model is voxelized and sealed: gaps narrower than a set radius close, so open shells
 and overlapping parts become one solid. Near the real surface, the voxel distances are replaced
 with exact point-to-triangle distances, so flat faces, crests and slits survive. Each bone of the
 rig, in the pose the model was bound in, claims the nearest part of the solid. Each region is then
 meshed with a level set and handed to the regular armor builders as their outer shape.
 
 Those builders still add every mechanical cut: frame pockets, joint swing clearance, slide-on
-channels, dowel holes, and collars around the hip and shoulder swivels. The skin therefore
-articulates exactly like the stock armor.
+channels, dowel holes, and collars around the hip and shoulder swivels. Two more rules make any
+body print and move:
+
+- *Carve for movement*: the chest, abdomen and pelvis lose what the upper arms and thighs sweep
+  through over their range (swings and twists), the thighs what the shins sweep at the knee, and
+  so on down to the ankles.
+- *Cover thin spots*: where the model is thinner than the frame, the leanest standard armor fills
+  in, so no joint is left bare.
+
+`scripts/posecheck.ts` poses a skinned figure through every preset and reports armor that would
+collide.
 
 There is also a headless version:
 
 ```bash
-node scripts/skin.ts model.stl out/ [spec.json]   # print-ready parts + assembled preview
+node scripts/skin.ts model.stl out/ [--height=140]   # fit, skin, print-ready parts + preview
+node scripts/skin.ts model.stl out/ spec.json        # use your own proportions and bind pose
 ```
 
 ## Development
@@ -76,6 +96,7 @@ node scripts/skin.ts model.stl out/ [spec.json]   # print-ready parts + assemble
 npm install
 npm run dev        # local dev server
 npm run check      # build every part for every preset; validate solids and test for collisions
+npm run fitcheck   # skeleton auto-fit on generated bodies
 npm run build      # type-check + production build into dist/
 ```
 
@@ -97,6 +118,7 @@ src/
   ui/              panel and controls
 scripts/check.ts   headless geometry, watertightness and collision tests (run in CI before deploying)
 scripts/skin.ts    headless character-skin builder
+scripts/fitcheck.ts, posecheck.ts   auto-fit accuracy and range-of-motion tests
 ```
 
 Pushing to `main` runs the checks, builds, and deploys to GitHub Pages.

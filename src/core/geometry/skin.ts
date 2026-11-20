@@ -61,10 +61,44 @@ function edt(mask: Uint8Array, value: number, nx: number, ny: number, nz: number
 }
 
 /**
- * Solid signed distance field of a (possibly open, overlapping, self-intersecting) mesh.
- * Openings narrower than about 2 * close are sealed.
+ * For every voxel, on how many of 14 directions (6 axes, 8 cube diagonals) a surface voxel lies
+ * ahead of it. Inside a hollow shell or a tube nearly every direction hits a wall; in the open
+ * crooks between limbs at most about half do.
  */
-export function solidField(pos: Float32Array, idx: Uint32Array, h: number, close: number): Field {
+export function enclosed(surf: Uint8Array, nx: number, ny: number, nz: number): Uint8Array {
+  const N = nx * ny * nz, sy = nx, sz = nx * ny;
+  const cnt = new Uint8Array(N), seen = new Uint8Array(N);
+  const dirs: [number, number, number][] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  for (const a of [1, -1]) for (const b of [1, -1]) for (const c of [1, -1]) dirs.push([a, b, c]);
+  for (const [dx, dy, dz] of dirs) {
+    // visit voxels so that the one behind (i - d) is always done first
+    const xs = dx >= 0 ? [0, nx, 1] : [nx - 1, -1, -1];
+    const ys = dy >= 0 ? [0, ny, 1] : [ny - 1, -1, -1];
+    const zs = dz >= 0 ? [0, nz, 1] : [nz - 1, -1, -1];
+    const back = -(dx + dy * sy + dz * sz);
+    for (let z = zs[0]; z !== zs[1]; z += zs[2]) {
+      const zb = z - dz >= 0 && z - dz < nz;
+      for (let y = ys[0]; y !== ys[1]; y += ys[2]) {
+        const yb = zb && y - dy >= 0 && y - dy < ny;
+        for (let x = xs[0]; x !== xs[1]; x += xs[2]) {
+          const i = x + sy * y + sz * z;
+          let v = 0;
+          if (yb && x - dx >= 0 && x - dx < nx) { const j = i + back; v = surf[j] | seen[j]; }
+          seen[i] = v;
+          cnt[i] += v;
+        }
+      }
+    }
+  }
+  return cnt;
+}
+
+/**
+ * Solid signed distance field of a (possibly open, overlapping, self-intersecting) mesh.
+ * Openings narrower than about 2 * close are sealed. `coarse` skips the smoothing and the exact
+ * distances near the surface (voxel-accurate, much faster).
+ */
+export function solidField(pos: Float32Array, idx: Uint32Array, h: number, close: number, coarse = false): Field {
   let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
   for (let i = 0; i < pos.length; i += 3) {
     const x = pos[i], y = pos[i + 1], z = pos[i + 2];
@@ -138,14 +172,18 @@ export function solidField(pos: Float32Array, idx: Uint32Array, h: number, close
       front = Int32Array.from(next);
     }
   }
+  // hollow shells and tubes (armor-style models) with openings wider than `close`: anything
+  // walled in on 12 of 14 directions counts as inside
+  const walled = enclosed(surf, nx, ny, nz);
   const solid = new Uint8Array(N);
-  for (let i = 0; i < N; i++) solid[i] = outside[i] ? 0 : 1;
+  for (let i = 0; i < N; i++) solid[i] = !outside[i] || walled[i] >= 12 ? 1 : 0;
 
   // 3. coarse signed distance from the voxel classification...
   const dIn = edt(solid, 0, nx, ny, nz);
   const dOutS = edt(solid, 1, nx, ny, nz);
   let sdf: Float32Array = new Float32Array(N);
   for (let i = 0; i < N; i++) sdf[i] = solid[i] ? (dIn[i] - 0.5) * h : -(dOutS[i] - 0.5) * h;
+  if (coarse) return { nx, ny, nz, h, o, sdf };
   sdf = blur(sdf, nx, ny, nz); // softens voxel steps on sealed openings (no real surface there)
   // ...refined near the real surface with exact point-to-triangle distances
   refineBand(sdf, solid, surf, dSurf ?? edt(surf, 1, nx, ny, nz), pos, idx, { nx, ny, nz, h, o });
@@ -232,7 +270,9 @@ function refineBand(sdf: Float32Array, solid: Uint8Array, surf: Uint8Array, dSur
   const q = [0, 0, 0, 0];
   for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
     const i = x + nx * (y + ny * z);
-    if (dSurf[i] > band) continue;
+    // only near the solid's boundary: walls buried inside (hollow shells that were filled,
+    // overlapping pieces) must not carve the interior
+    if (dSurf[i] > band || Math.abs(sdf[i]) > (band + 1) * h) continue;
     const px = o[0] + x * h, py = o[1] + y * h, pz = o[2] + z * h;
     const cell = ((x * h) / cs | 0) + cx * (((y * h) / cs | 0) + cy * ((z * h) / cs | 0));
     let best = Infinity, bt = -1, bqx = 0, bqy = 0, bqz = 0, bRegion = 0;
